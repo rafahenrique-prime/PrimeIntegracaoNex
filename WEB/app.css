@@ -9,6 +9,11 @@ main { max-width: 900px; margin: 0 auto; padding: 16px 24px 48px; }
 .banner { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-weight: 600; }
 .banner.erro { background: #fdecea; color: #9b1c1c; border: 1px solid #f5c6c2; }
 .banner.simulacao { background: #fff4d6; color: #7a5b00; border: 1px solid #f0d98c; text-align: center; }
+.banner.aviso-temporario { background: #eef4ff; color: #1a3d7c; border: 1px solid #c7d9f7; font-weight: normal; }
+.banner.sucesso { background: #e8f7ec; color: #1e6b34; border: 1px solid #b9e4c4; }
+#btn-confirmar-importacao { background: #1e8e3e; color: #fff; border-color: #1e8e3e; }
+#btn-confirmar-importacao:hover { background: #176b2f; }
+#btn-confirmar-importacao:disabled { background: #9bd3ac; border-color: #9bd3ac; cursor: not-allowed; }
 
 .area-drop { border: 2px dashed #b7bcc4; border-radius: 10px; padding: 48px 24px; text-align: center; background: #fff; transition: background .15s, border-color .15s; }
 .area-drop.arrastando { background: #eef4ff; border-color: #4a7dfc; }

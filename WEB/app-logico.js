@@ -83,6 +83,8 @@
     PREVIA: 'previa',
     AVISOS: 'avisos',
     REVISAO: 'revisao',
+    IMPORTANDO: 'importando',
+    RESULTADO_IMPORTACAO: 'resultado_importacao',
   };
 
   function proximaSecaoAoTrocarArquivo() {
@@ -217,6 +219,51 @@
     return partes.join(' ');
   }
 
+  // ---------- Fase 5: confirmar importacao ----------
+
+  /**
+   * Decide se o botao "Confirmar importacao" pode ser acionado, a partir
+   * do mesmo relatorio ja mostrado na previa. Nao decide nada sozinho -
+   * so lê os totais ja calculados por SRC/simular-importacao.js.
+   */
+  function podeConfirmarImportacao(relatorio) {
+    if (!relatorio || !relatorio.totais) {
+      return { ok: false, mensagem: 'Nenhuma analise disponivel. Analise uma planilha primeiro.' };
+    }
+    const t = relatorio.totais;
+    const importaveis = (t.validos || 0) + (t.validos_com_aviso || 0);
+    if (importaveis === 0) {
+      return { ok: false, mensagem: 'Nao ha nenhum registro valido ou com aviso para importar.' };
+    }
+    return { ok: true };
+  }
+
+  function mensagemConfirmacaoImportacao(relatorio) {
+    const t = relatorio.totais;
+    const importaveis = (t.validos || 0) + (t.validos_com_aviso || 0);
+    return 'Confirmar a importacao de ' + importaveis + ' cliente(s) para o RepositorioClientesFake?\n\n' +
+      'Os dados ficam apenas em memoria neste servidor local e serao perdidos se o servidor for reiniciado.';
+  }
+
+  /**
+   * Monta os cartoes do relatorio final, a partir da resposta de
+   * POST /api/importar somada ao numero de revisao_manual ja calculado
+   * na analise original (essa contagem nao muda com a sincronizacao).
+   */
+  function cartoesResultadoImportacao(respostaImportar, revisaoManualDaAnalise) {
+    const r = respostaImportar.resumo_execucao;
+    return [
+      ['Total processado', respostaImportar.total_processado],
+      ['Novos clientes', r.criados],
+      ['Atualizados', r.atualizados],
+      ['Quitados', r.quitados],
+      ['Sem alteração', r.sem_alteracao],
+      ['Removidos/ausentes', r.nao_aplicados],
+      ['Revisão manual (da análise)', revisaoManualDaAnalise || 0],
+      ['Avisos na sincronização', (respostaImportar.avisos || []).length],
+    ];
+  }
+
   function detalhesDoRegistro(registro) {
     return {
       dadosNex: [
@@ -269,5 +316,8 @@
     detalhesDoRegistro,
     explicacaoResumida,
     classificacaoFinanceiraTexto,
+    podeConfirmarImportacao,
+    mensagemConfirmacaoImportacao,
+    cartoesResultadoImportacao,
   };
 }));

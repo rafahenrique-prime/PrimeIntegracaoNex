@@ -8,6 +8,11 @@
  * totais/avisos/invalidos/revisao-manual ja validados, arquivo invalido/
  * ilegivel, independencia de HTTP, e equivalencia entre o resultado do
  * servico chamado direto e o resultado que sai pelo servidor HTTP.
+ *
+ * Ajuste Fase 5: `registros` passou a carregar o objeto PRIME normalizado
+ * INTEIRO (nao mais um subconjunto), para servir de entrada direta a
+ * ServicoSincronizacao quando o usuario confirma a importacao pela
+ * interface. O teste 1b abaixo trava esse contrato.
  */
 
 const fs = require('fs');
@@ -58,7 +63,18 @@ async function main() {
   todosPassaram &= check('resultado tem relatorio/registros_com_aviso/registros', !!r1.relatorio && !!r1.registros_com_aviso && !!r1.registros);
   todosPassaram &= check('total_registros = 2', r1.relatorio.totais.total_registros === 2);
   todosPassaram &= check('total_debito = 100', r1.relatorio.totais.total_debito === 100);
-  todosPassaram &= check('registros[0].data_snapshot_nex vem de opcoes.dataSnapshot', true); // validado indiretamente via determinismo abaixo
+  todosPassaram &= check('registros[0].data_snapshot_nex vem de opcoes.dataSnapshot', r1.registros[0].data_snapshot_nex === '2026-07-30');
+
+  // ---------- 1b. Contrato Fase 5: registros carrega o objeto PRIME completo ----------
+  console.log('\n=== 1b. registros[] carrega o objeto PRIME completo (contrato Fase 5) ===');
+  const reg1 = r1.registros[0];
+  const camposObrigatoriosDoSchema = ['prime_id', 'nex_codigo', 'origem_sistema', 'historico', 'status_cobranca', 'consentimento_contato', 'tentativas_cobranca', 'fonte_arquivo_origem'];
+  todosPassaram &= check('registro tem todos os campos obrigatorios do schema-prime', camposObrigatoriosDoSchema.every((c) => Object.prototype.hasOwnProperty.call(reg1, c)));
+  todosPassaram &= check('registro.prime_id ainda null (normalizacao nao gera id)', reg1.prime_id === null);
+  todosPassaram &= check('registro.historico e array vazio', Array.isArray(reg1.historico) && reg1.historico.length === 0);
+  todosPassaram &= check('registro.origem_sistema = NEX', reg1.origem_sistema === 'NEX');
+  todosPassaram &= check('registro.consentimento_contato = nao_solicitado', reg1.consentimento_contato === 'nao_solicitado');
+  todosPassaram &= check('registro ainda tem os campos de exibicao (validacao_status, tem_celular)', 'validacao_status' in reg1 && 'tem_celular' in reg1);
 
   // ---------- 2/3/4. Resultado com os 1.386 registros reais + totais ja validados ----------
   console.log('\n=== 2/3/4. Os 1.386 registros reais - totais, avisos, invalidos, revisao manual ===');

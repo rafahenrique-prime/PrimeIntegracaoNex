@@ -7,6 +7,14 @@
  * Usa SERVICO/repositorio-clientes-fake.js (Fake, so para teste) para
  * validar o fluxo completo: buscarTodos -> comparar-clientes ->
  * executar-plano-importacao -> salvarLote.
+ *
+ * Ajuste (revisao critica da Fase 5, antes da aprovacao final):
+ * sincronizar() passou a revalidar novaImportacao com
+ * SRC/validar-normalizados.js antes de sincronizar. Isso expos 3
+ * fixtures desta suite que sempre foram inconsistentes (saldo_debito_nex
+ * > 0 sem status_cobranca = "em_aberto" correspondente) mas nunca eram
+ * checadas porque sincronizar() nao validava nada antes. Corrigidas para
+ * refletir dados realmente validos - nenhuma asserção foi enfraquecida.
  */
 
 const path = require('path');
@@ -54,7 +62,7 @@ async function main() {
   // ---------- 1. Primeira sincronizacao (base vazia) ----------
   console.log('\n=== 1. Primeira sincronizacao (base vazia) ===');
   const repo1 = new RepositorioClientesFake();
-  const nova1 = [clientePrime({ nex_codigo: 100, saldo_debito_nex: 50, valor_liquido_nex: 50 }), clientePrime({ nex_codigo: 101 })];
+  const nova1 = [clientePrime({ nex_codigo: 100, saldo_debito_nex: 50, valor_liquido_nex: 50, status_cobranca: 'em_aberto' }), clientePrime({ nex_codigo: 101 })];
   const r1 = await sincronizar(repo1, nova1, contexto());
   todosPassaram &= check('primeira sync: 2 criados', r1.execucao.resumo_execucao.criados === 2);
   todosPassaram &= check('primeira sync: 0 atualizados/quitados/sem_alteracao/nao_aplicados', r1.execucao.resumo_execucao.atualizados === 0 && r1.execucao.resumo_execucao.quitados === 0 && r1.execucao.resumo_execucao.sem_alteracao === 0 && r1.execucao.resumo_execucao.nao_aplicados === 0);
@@ -84,7 +92,7 @@ async function main() {
   // ---------- 5. Atualizacao de registros ----------
   console.log('\n=== 5. Atualizacao de registros (saldo mudou) ===');
   const repo4 = new RepositorioClientesFake([clientePrime({ nex_codigo: 10, prime_id: 'PRIME-10', saldo_debito_nex: 100, valor_liquido_nex: 100, status_cobranca: 'em_aberto' })]);
-  const nova4 = [clientePrime({ nex_codigo: 10, saldo_debito_nex: 250, valor_liquido_nex: 250 })];
+  const nova4 = [clientePrime({ nex_codigo: 10, saldo_debito_nex: 250, valor_liquido_nex: 250, status_cobranca: 'em_aberto' })];
   const r4 = await sincronizar(repo4, nova4, contexto());
   todosPassaram &= check('atualizados = 1', r4.execucao.resumo_execucao.atualizados === 1);
   const pos4 = await repo4.buscarPorNexCodigo(10);
@@ -135,7 +143,7 @@ async function main() {
     clientePrime({ nex_codigo: 204, prime_id: 'PRIME-204' }), // removido da exportacao
   ];
   const novaCompleta = [
-    clientePrime({ nex_codigo: 201, saldo_debito_nex: 400, valor_liquido_nex: 400 }),
+    clientePrime({ nex_codigo: 201, saldo_debito_nex: 400, valor_liquido_nex: 400, status_cobranca: 'em_aberto' }),
     clientePrime({ nex_codigo: 202, saldo_debito_nex: 0, valor_liquido_nex: 0 }),
     clientePrime({ nex_codigo: 203 }),
     clientePrime({ nex_codigo: 205 }), // novo

@@ -102,32 +102,16 @@ function analisarArquivoXls(buffer, opcoes) {
       };
     });
 
-  // Fase 3B: lista completa de todos os registros, para a tela de revisao visual.
+  // Fase 3B/5: lista completa de todos os registros, para a tela de revisao
+  // visual E (Fase 5) para servir de entrada direta a ServicoSincronizacao
+  // quando o usuario confirmar a importacao - por isso cada item carrega o
+  // objeto PRIME normalizado INTEIRO (todos os campos de schema-prime.js),
+  // nao apenas o subconjunto usado para exibicao. Isso evita duas
+  // representacoes divergentes do mesmo cliente e mantem o servidor HTTP
+  // sem estado de sessao (o navegador guarda e reenvia o mesmo array).
   const registros = normalizados.map((n) => {
     const detalhe = detalhesPorCodigo.get(String(n.nex_codigo)) || { status: 'invalido', erros: [], avisos: [] };
-    return {
-      nex_codigo: n.nex_codigo,
-      nome: n.nome,
-      celular: n.celular,
-      telefone: n.telefone,
-      email: n.email,
-      cpf_cnpj: n.cpf_cnpj,
-      endereco_logradouro: n.endereco_logradouro,
-      endereco_numero: n.endereco_numero,
-      endereco_complemento: n.endereco_complemento,
-      endereco_bairro: n.endereco_bairro,
-      endereco_cidade: n.endereco_cidade,
-      endereco_uf: n.endereco_uf,
-      endereco_cep: n.endereco_cep,
-      saldo_debito_nex: n.saldo_debito_nex,
-      saldo_credito_nex: n.saldo_credito_nex,
-      valor_liquido_nex: n.valor_liquido_nex,
-      status_cobranca: n.status_cobranca,
-      observacao_original_nex: n.observacao_original_nex,
-      observacao_categoria: n.observacao_categoria,
-      vencimento_sugerido: n.vencimento_sugerido,
-      parcelamento_sugerido: n.parcelamento_sugerido,
-      confianca_extracao: n.confianca_extracao,
+    return Object.assign({}, n, {
       tem_celular: !!n.celular,
       tem_cpf: !!n.cpf_cnpj,
       validacao_status: detalhe.status,
@@ -135,7 +119,7 @@ function analisarArquivoXls(buffer, opcoes) {
       avisos: detalhe.avisos,
       qtd_avisos: detalhe.avisos.length,
       revisao_manual: precisaRevisaoManual(detalhe.avisos),
-    };
+    });
   });
 
   return { relatorio, registros_com_aviso: registrosComAviso, registros };

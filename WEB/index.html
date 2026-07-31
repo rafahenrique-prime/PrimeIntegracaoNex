@@ -43,7 +43,7 @@
     </section>
 
     <section id="secao-previa" class="oculto">
-      <div class="banner simulacao">SIMULAÇÃO — NENHUM DADO FOI GRAVADO.</div>
+      <div class="banner aviso-temporario">Esta é uma prévia — nada foi gravado ainda. Ao clicar em "Confirmar importação", os clientes serão salvos no RepositorioClientesFake (memória deste servidor local, perdida se o servidor for reiniciado). Nenhum banco definitivo é usado ainda.</div>
 
       <h2>Prévia da importação</h2>
       <div id="grid-cards" class="grid-cards"></div>
@@ -55,7 +55,34 @@
         <button id="btn-outro-arquivo" type="button">Escolher outro arquivo</button>
         <button id="btn-ver-avisos" type="button">Ver registros com aviso</button>
         <button id="btn-revisar-registros" type="button">Revisar registros</button>
+        <button id="btn-confirmar-importacao" type="button">Confirmar importação</button>
         <button id="btn-finalizar" type="button">Finalizar prévia</button>
+      </div>
+    </section>
+
+    <section id="secao-importando" class="oculto">
+      <p>Importando clientes para o RepositorioClientesFake... não feche esta janela.</p>
+    </section>
+
+    <section id="secao-resultado-importacao" class="oculto">
+      <div id="banner-resultado-importacao" class="banner"></div>
+
+      <h2>Relatório da importação</h2>
+      <div id="grid-resultado-importacao" class="grid-cards"></div>
+
+      <div id="bloco-avisos-importacao" class="oculto">
+        <h3>Avisos da sincronização</h3>
+        <ul id="lista-avisos-importacao"></ul>
+      </div>
+
+      <div id="bloco-nao-aplicados-importacao" class="oculto">
+        <h3>Registros não aplicados</h3>
+        <ul id="lista-nao-aplicados-importacao"></ul>
+      </div>
+
+      <div class="acoes-finais">
+        <button id="btn-voltar-revisao-apos-erro" type="button" class="oculto">Voltar para a revisão</button>
+        <button id="btn-nova-importacao" type="button">Nova importação</button>
       </div>
     </section>
 

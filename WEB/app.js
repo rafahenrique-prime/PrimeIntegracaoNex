@@ -2,7 +2,7 @@
 
 (function () {
   const L = window.AppLogico;
-  const estado = { arquivo: null, ultimoResultado: null, filtroAtivo: 'todos', termoBusca: '', registrosPorCodigo: new Map() };
+  const estado = { arquivo: null, ultimoResultado: null, filtroAtivo: 'todos', termoBusca: '', registrosPorCodigo: new Map(), importando: false };
 
   const el = (id) => document.getElementById(id);
 
@@ -13,6 +13,8 @@
     previa: el('secao-previa'),
     avisos: el('secao-avisos'),
     revisao: el('secao-revisao'),
+    importando: el('secao-importando'),
+    resultado_importacao: el('secao-resultado-importacao'),
   };
   const bannerErro = el('banner-erro');
   const modalDetalhes = el('modal-detalhes');
@@ -79,8 +81,10 @@
     estado.filtroAtivo = 'todos';
     estado.termoBusca = '';
     estado.registrosPorCodigo = new Map();
+    estado.importando = false;
     el('input-arquivo').value = '';
     el('campo-busca').value = '';
+    el('btn-confirmar-importacao').disabled = false;
     limparErro();
     mostrarSecao(L.proximaSecaoAoTrocarArquivo());
   }
@@ -260,4 +264,103 @@
   modalDetalhes.addEventListener('click', (ev) => {
     if (ev.target === modalDetalhes) modalDetalhes.classList.add('oculto');
   });
+
+  // ---------- Fase 5: confirmar importacao (RepositorioClientesFake) ----------
+
+  function renderizarResultadoImportacao(resposta, sucesso) {
+    const revisaoManual = estado.ultimoResultado ? estado.ultimoResultado.relatorio.previsao_importacao.revisao_manual : 0;
+    const banner = el('banner-resultado-importacao');
+
+    if (sucesso) {
+      banner.className = 'banner sucesso';
+      banner.textContent = 'Importação concluída com sucesso no RepositorioClientesFake (dados em memória, perdidos ao reiniciar o servidor).';
+      preencherCards('grid-resultado-importacao', L.cartoesResultadoImportacao(resposta, revisaoManual));
+      el('btn-voltar-revisao-apos-erro').classList.add('oculto');
+    } else {
+      banner.className = 'banner erro';
+      banner.textContent = resposta && resposta.mensagem ? resposta.mensagem : 'Não foi possível concluir a importação. Nenhum dado foi salvo.';
+      el('grid-resultado-importacao').innerHTML = '';
+      el('btn-voltar-revisao-apos-erro').classList.remove('oculto');
+    }
+
+    const blocoAvisos = el('bloco-avisos-importacao');
+    const listaAvisos = el('lista-avisos-importacao');
+    listaAvisos.innerHTML = '';
+    const avisos = (resposta && resposta.avisos) || [];
+    if (avisos.length) {
+      avisos.forEach((a) => {
+        const li = document.createElement('li');
+        li.textContent = a;
+        listaAvisos.appendChild(li);
+      });
+      blocoAvisos.classList.remove('oculto');
+    } else {
+      blocoAvisos.classList.add('oculto');
+    }
+
+    const blocoNaoAplicados = el('bloco-nao-aplicados-importacao');
+    const listaNaoAplicados = el('lista-nao-aplicados-importacao');
+    listaNaoAplicados.innerHTML = '';
+    const naoAplicados = (resposta && resposta.registros_nao_aplicados) || [];
+    if (naoAplicados.length) {
+      naoAplicados.forEach((r) => {
+        const li = document.createElement('li');
+        li.textContent = 'Cliente ' + r.nex_codigo + ': ' + r.motivo;
+        listaNaoAplicados.appendChild(li);
+      });
+      blocoNaoAplicados.classList.remove('oculto');
+    } else {
+      blocoNaoAplicados.classList.add('oculto');
+    }
+
+    mostrarSecao(L.SECAO.RESULTADO_IMPORTACAO);
+  }
+
+  el('btn-confirmar-importacao').addEventListener('click', async () => {
+    if (estado.importando) return; // trava contra clique duplicado
+    if (!estado.ultimoResultado) {
+      mostrarErro('Nenhuma análise disponível. Analise uma planilha antes de importar.');
+      return;
+    }
+
+    const podeConfirmar = L.podeConfirmarImportacao(estado.ultimoResultado.relatorio);
+    if (!podeConfirmar.ok) {
+      mostrarErro(podeConfirmar.mensagem);
+      return;
+    }
+
+    const confirmado = window.confirm(L.mensagemConfirmacaoImportacao(estado.ultimoResultado.relatorio));
+    if (!confirmado) return;
+
+    limparErro();
+    estado.importando = true;
+    el('btn-confirmar-importacao').disabled = true;
+    mostrarSecao(L.SECAO.IMPORTANDO);
+
+    try {
+      const resposta = await fetch('/api/importar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ registros: estado.ultimoResultado.registros }),
+      });
+      const dados = await resposta.json();
+      if (!resposta.ok) {
+        renderizarResultadoImportacao(dados, false);
+      } else {
+        renderizarResultadoImportacao(dados, true);
+      }
+    } catch (e) {
+      renderizarResultadoImportacao({ mensagem: 'Erro de comunicação com o servidor local. Verifique se o servidor está rodando.' }, false);
+    } finally {
+      estado.importando = false;
+      el('btn-confirmar-importacao').disabled = false;
+    }
+  });
+
+  el('btn-voltar-revisao-apos-erro').addEventListener('click', () => {
+    limparErro();
+    mostrarSecao('previa');
+  });
+
+  el('btn-nova-importacao').addEventListener('click', resetarParaUpload);
 })();
