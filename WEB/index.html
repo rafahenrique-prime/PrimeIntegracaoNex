@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Importar Clientes do NEX</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <h1>IMPORTAR CLIENTES DO NEX</h1>
+    <p class="subtitulo">Exporte o relatório de clientes do NEX e selecione o arquivo abaixo.</p>
+  </header>
+
+  <main>
+    <div id="banner-erro" class="banner erro oculto" role="alert"></div>
+
+    <section id="secao-upload">
+      <div id="area-drop" class="area-drop">
+        <p>Arraste o arquivo .xls aqui</p>
+        <p>ou</p>
+        <button id="btn-selecionar" type="button">Selecionar arquivo</button>
+        <input id="input-arquivo" type="file" accept=".xls" hidden>
+        <p class="formato-aceito">Formato aceito: .xls (Excel 97-2003) — apenas um arquivo por vez</p>
+      </div>
+    </section>
+
+    <section id="secao-arquivo-selecionado" class="oculto">
+      <div class="cartao-arquivo">
+        <div>
+          <strong id="nome-arquivo"></strong>
+          <span id="tamanho-arquivo"></span>
+        </div>
+        <div class="acoes">
+          <button id="btn-remover" type="button">Remover</button>
+          <button id="btn-analisar" type="button">Analisar planilha</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="secao-processando" class="oculto">
+      <p>Analisando planilha... isso pode levar alguns segundos.</p>
+    </section>
+
+    <section id="secao-previa" class="oculto">
+      <div class="banner simulacao">SIMULAÇÃO — NENHUM DADO FOI GRAVADO.</div>
+
+      <h2>Prévia da importação</h2>
+      <div id="grid-cards" class="grid-cards"></div>
+
+      <h2>Resultado previsto</h2>
+      <div id="grid-previsao" class="grid-cards"></div>
+
+      <div class="acoes-finais">
+        <button id="btn-outro-arquivo" type="button">Escolher outro arquivo</button>
+        <button id="btn-ver-avisos" type="button">Ver registros com aviso</button>
+        <button id="btn-revisar-registros" type="button">Revisar registros</button>
+        <button id="btn-finalizar" type="button">Finalizar prévia</button>
+      </div>
+    </section>
+
+    <section id="secao-avisos" class="oculto">
+      <h2>Registros com aviso</h2>
+      <table id="tabela-avisos">
+        <thead>
+          <tr><th>Código</th><th>Nome</th><th>Saldo débito</th><th>Celular</th><th>CPF/CNPJ</th><th>Qtd. avisos</th><th>Avisos</th></tr>
+        </thead>
+        <tbody id="corpo-tabela-avisos"></tbody>
+      </table>
+      <button id="btn-fechar-avisos" type="button">Fechar</button>
+    </section>
+
+    <section id="secao-revisao" class="oculto">
+      <div class="banner simulacao">SIMULAÇÃO — NENHUM DADO FOI GRAVADO. Tela exclusiva de auditoria visual.</div>
+
+      <h2>Revisão dos registros</h2>
+      <div id="grid-resumo-revisao" class="grid-cards resumo-compacto"></div>
+
+      <div class="barra-filtros">
+        <div id="grupo-filtros" class="grupo-filtros"></div>
+        <input id="campo-busca" type="text" placeholder="Buscar por código, nome, telefone ou celular...">
+      </div>
+
+      <p id="contador-resultados" class="contador-resultados"></p>
+
+      <div class="tabela-scroll">
+        <table id="tabela-registros">
+          <thead>
+            <tr>
+              <th>Código</th><th>Nome</th><th>Débito</th><th>Crédito</th><th>Situação</th>
+              <th>Celular</th><th>CPF/CNPJ</th><th>Obs.</th><th>Validação</th><th>Avisos</th>
+            </tr>
+          </thead>
+          <tbody id="corpo-tabela-registros"></tbody>
+        </table>
+      </div>
+
+      <button id="btn-fechar-revisao" type="button">Voltar</button>
+    </section>
+
+    <div id="modal-detalhes" class="modal oculto">
+      <div class="modal-conteudo">
+        <button id="btn-fechar-detalhes" class="modal-fechar" type="button" aria-label="Fechar">×</button>
+        <h2 id="detalhes-titulo"></h2>
+        <div id="detalhes-corpo"></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/app-logico.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

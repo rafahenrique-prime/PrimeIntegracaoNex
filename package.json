@@ -1,0 +1,16 @@
+{
+  "name": "primeintegracaonex",
+  "version": "1.0.0",
+  "description": "POC para validar a viabilidade de alimentar o PRIME Cobranças a partir das exportações oficiais (.xls) do sistema NEX.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  }
+}

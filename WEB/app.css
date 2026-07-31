@@ -1,0 +1,65 @@
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: #f5f6f8; color: #1a1a1a; }
+header { padding: 28px 24px 12px; text-align: center; }
+h1 { margin: 0 0 8px; font-size: 1.6rem; letter-spacing: 0.5px; }
+.subtitulo { color: #555; margin: 0; }
+main { max-width: 900px; margin: 0 auto; padding: 16px 24px 48px; }
+.oculto { display: none !important; }
+
+.banner { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-weight: 600; }
+.banner.erro { background: #fdecea; color: #9b1c1c; border: 1px solid #f5c6c2; }
+.banner.simulacao { background: #fff4d6; color: #7a5b00; border: 1px solid #f0d98c; text-align: center; }
+
+.area-drop { border: 2px dashed #b7bcc4; border-radius: 10px; padding: 48px 24px; text-align: center; background: #fff; transition: background .15s, border-color .15s; }
+.area-drop.arrastando { background: #eef4ff; border-color: #4a7dfc; }
+.area-drop button { margin-top: 8px; padding: 10px 20px; border: none; border-radius: 6px; background: #2f6fed; color: #fff; font-weight: 600; cursor: pointer; }
+.area-drop button:hover { background: #2559c9; }
+.formato-aceito { color: #888; font-size: 0.85rem; margin-top: 12px; }
+
+.cartao-arquivo { display: flex; justify-content: space-between; align-items: center; background: #fff; border-radius: 8px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); flex-wrap: wrap; gap: 12px; }
+.cartao-arquivo .acoes button { margin-left: 8px; padding: 8px 16px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+#btn-analisar { background: #2f6fed; color: #fff; border-color: #2f6fed; }
+#btn-analisar:hover { background: #2559c9; }
+
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.cartao { background: #fff; border-radius: 8px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.cartao-valor { font-size: 1.3rem; font-weight: 700; word-break: break-word; }
+.cartao-rotulo { color: #666; font-size: 0.78rem; margin-top: 4px; }
+
+.acoes-finais { display: flex; gap: 12px; flex-wrap: wrap; }
+.acoes-finais button { padding: 10px 18px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+.acoes-finais button:hover { background: #f0f0f0; }
+
+table { width: 100%; border-collapse: collapse; background: #fff; margin-bottom: 16px; }
+th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.85rem; }
+th { background: #fafafa; }
+
+#secao-processando { text-align: center; padding: 48px 0; color: #555; }
+
+/* Fase 3B - revisao visual dos registros */
+.resumo-compacto .cartao { padding: 12px; }
+.resumo-compacto .cartao-valor { font-size: 1.05rem; }
+
+.barra-filtros { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 0; }
+.grupo-filtros { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn-filtro { padding: 6px 12px; border-radius: 999px; border: 1px solid #ccc; background: #fff; cursor: pointer; font-size: 0.8rem; }
+.btn-filtro.ativo { background: #2f6fed; color: #fff; border-color: #2f6fed; }
+#campo-busca { padding: 8px 12px; border-radius: 6px; border: 1px solid #ccc; min-width: 260px; flex: 1; }
+
+.contador-resultados { color: #666; font-size: 0.85rem; margin: 4px 0 8px; }
+
+.tabela-scroll { max-height: 60vh; overflow: auto; border: 1px solid #eee; border-radius: 6px; margin-bottom: 12px; }
+.tabela-scroll table { margin-bottom: 0; }
+.tabela-scroll thead th { position: sticky; top: 0; background: #fafafa; z-index: 1; }
+.linha-registro { cursor: pointer; }
+.linha-registro:hover { background: #f5f8ff; }
+
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow: auto; z-index: 10; }
+.modal-conteudo { background: #fff; border-radius: 10px; padding: 24px; max-width: 640px; width: 100%; position: relative; }
+.modal-fechar { position: absolute; top: 12px; right: 16px; background: none; border: none; font-size: 1.4rem; cursor: pointer; color: #666; }
+.modal-conteudo h3 { margin: 18px 0 8px; font-size: 0.95rem; color: #333; }
+.modal-conteudo h3:first-of-type { margin-top: 8px; }
+.linha-detalhe { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid #f2f2f2; font-size: 0.85rem; }
+.rotulo-detalhe { color: #666; }
+.valor-detalhe { text-align: right; word-break: break-word; }
+.modal-conteudo ul { margin: 4px 0; padding-left: 20px; font-size: 0.85rem; }
