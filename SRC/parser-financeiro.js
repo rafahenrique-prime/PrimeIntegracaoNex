@@ -55,4 +55,41 @@ function parseFinanceiro(raw) {
   return { tipo: 'formato_nao_reconhecido', raw: text, debito: null, credito: null };
 }
 
-module.exports = { parseValorBR, parseFinanceiro };
+/**
+ * Parser de valor monetario "solto" (sem rotulo Debito/Credito), no formato
+ * como aparece nas colunas de moeda dos exports oficiais de Vendas/Transacoes
+ * do NEX (Fase EXPORT-FIRST), ex.: "R$ 87.00 ", "R$ 1.135,00", "87.00".
+ *
+ * Reutiliza parseValorBR para a normalizacao de separador decimal/milhar -
+ * a unica diferenca e que aqui removemos o prefixo "R$" antes, e vazio/null
+ * vira `null` (nao encontrado) em vez de NaN (erro de formato), para o
+ * chamador poder distinguir "campo nao preenchido" de "valor corrompido".
+ *
+ * Formatos observados nos exports auditados e cobertos:
+ *   "R$ 87.00 "     -> 87    (ponto como separador DECIMAL - sem virgula)
+ *   "R$ 1.135,00"   -> 1135  (padrao BR: ponto = milhar, virgula = decimal)
+ *   "87.00"         -> 87    (mesmo sem "R$")
+ *   ""              -> null
+ *   null/undefined  -> null
+ *
+ * ATENCAO - ambiguidade conhecida e NAO resolvida por este parser: um valor
+ * com ponto e SEM virgula e SEM casas decimais aparentes (ex.: "1.135") e
+ * ambiguo entre "mil, cento e trinta e cinco" (BR, ponto=milhar) e "um virgula
+ * cento e trinta e cinco" (ponto=decimal). Este parser herda o comportamento
+ * de parseValorBR para esse caso (trata o ponto como decimal, pois nao ha
+ * virgula), que e o mesmo comportamento ja usado em producao por essa funcao.
+ * Nenhum export auditado ate agora produziu essa forma ambigua sem casas
+ * decimais - se isso aparecer no futuro, este parser deve ser revisado antes
+ * de confiar cegamente no resultado.
+ */
+function parseValorSolto(str) {
+  if (str == null) return null;
+  let s = String(str).trim();
+  if (!s) return null;
+  s = s.replace(/^r\$\s*/i, '').trim();
+  if (!s) return null;
+  const valor = parseValorBR(s);
+  return Number.isNaN(valor) ? null : valor;
+}
+
+module.exports = { parseValorBR, parseFinanceiro, parseValorSolto };
