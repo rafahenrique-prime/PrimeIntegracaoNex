@@ -11,6 +11,19 @@
  * ambos podem coexistir na mesma celula.
  */
 
+/**
+ * Quando virgula E ponto aparecem juntos, o separador DECIMAL e sempre o
+ * que ocorre por ULTIMO na string - o outro (podendo repetir, ex.:
+ * "12.345.678,90") e separador de milhar e e descartado. Isso cobre tanto
+ * o padrao BR ("1.135,00", decimal=virgula, por ultimo) quanto o padrao
+ * EN-US ("1,135.00", decimal=ponto, por ultimo) sem assumir cegamente um
+ * dos dois - correcao do bug em que valores EN-US com milhar (ex.:
+ * "R$ 1,135.00") eram lidos como "1.135" (mil cento e trinta e cinco
+ * virava um-virgula-cento-e-trinta-e-cinco). Quando so um dos dois
+ * separadores aparece, o comportamento historico e preservado (virgula
+ * isolada = decimal; ponto isolado = decimal, caso ja validado em
+ * producao para os campos rotulados Debito/Credito - ver Fase 1).
+ */
 function parseValorBR(str) {
   if (str == null) return NaN;
   let s = String(str).trim();
@@ -18,7 +31,10 @@ function parseValorBR(str) {
   const hasComma = s.includes(',');
   const hasDot = s.includes('.');
   if (hasComma && hasDot) {
-    s = s.replace(/\./g, '').replace(',', '.');
+    const decimalECaVirgula = s.lastIndexOf(',') > s.lastIndexOf('.');
+    s = decimalECaVirgula
+      ? s.replace(/\./g, '').replace(',', '.')
+      : s.replace(/,/g, '');
   } else if (hasComma && !hasDot) {
     s = s.replace(',', '.');
   }
@@ -66,21 +82,29 @@ function parseFinanceiro(raw) {
  * chamador poder distinguir "campo nao preenchido" de "valor corrompido".
  *
  * Formatos observados nos exports auditados e cobertos:
- *   "R$ 87.00 "     -> 87    (ponto como separador DECIMAL - sem virgula)
- *   "R$ 1.135,00"   -> 1135  (padrao BR: ponto = milhar, virgula = decimal)
- *   "87.00"         -> 87    (mesmo sem "R$")
+ *   "R$ 87.00 "     -> 87      (ponto como separador DECIMAL - sem virgula)
+ *   "R$ 1.135,00"   -> 1135    (padrao BR: ponto = milhar, virgula = decimal)
+ *   "R$ 1,135.00"   -> 1135    (padrao EN-US: virgula = milhar, ponto = decimal)
+ *   "R$ 12.345,67"  -> 12345.67
+ *   "R$ 12,345.67"  -> 12345.67
+ *   "87.00"         -> 87      (mesmo sem "R$")
+ *   "0" / "0,00" / "0.00" -> 0
  *   ""              -> null
  *   null/undefined  -> null
  *
- * ATENCAO - ambiguidade conhecida e NAO resolvida por este parser: um valor
- * com ponto e SEM virgula e SEM casas decimais aparentes (ex.: "1.135") e
- * ambiguo entre "mil, cento e trinta e cinco" (BR, ponto=milhar) e "um virgula
- * cento e trinta e cinco" (ponto=decimal). Este parser herda o comportamento
- * de parseValorBR para esse caso (trata o ponto como decimal, pois nao ha
- * virgula), que e o mesmo comportamento ja usado em producao por essa funcao.
- * Nenhum export auditado ate agora produziu essa forma ambigua sem casas
- * decimais - se isso aparecer no futuro, este parser deve ser revisado antes
- * de confiar cegamente no resultado.
+ * Distincao BR vs EN-US quando ambos os separadores aparecem: ver
+ * parseValorBR acima (regra do separador decimal = o que ocorre por
+ * ultimo na string).
+ *
+ * ATENCAO - ambiguidade remanescente, NAO resolvida por este parser: um
+ * valor com ponto e SEM virgula e SEM casas decimais aparentes (ex.:
+ * "1.135", isolado) continua ambiguo entre "mil, cento e trinta e cinco"
+ * (BR, ponto=milhar) e "um virgula cento e trinta e cinco" (ponto=decimal).
+ * Este parser preserva o comportamento historico ja validado em producao
+ * para esse caso isolado (trata o ponto como decimal). Nenhum export
+ * auditado ate agora produziu essa forma ambigua sem casas decimais - se
+ * isso aparecer no futuro, este parser deve ser revisado antes de confiar
+ * cegamente no resultado.
  */
 function parseValorSolto(str) {
   if (str == null) return null;

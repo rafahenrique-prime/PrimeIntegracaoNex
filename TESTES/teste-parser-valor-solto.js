@@ -40,6 +40,35 @@ todosPassaram &= check('Valor grande com virgula BR (R$ 25.414,58)', parseValorS
 todosPassaram &= check('parseValorBR("150,00") continua igual (regressao)', parseValorBR('150,00'), 150);
 todosPassaram &= check('parseValorBR("1.234,56") continua igual (regressao)', parseValorBR('1.234,56'), 1234.56);
 
+// ---------- CORRECAO DE BUG: formato EN-US (virgula=milhar, ponto=decimal) ----------
+// Bug real encontrado na auditoria F2.3 (transacao #13252): valores EN-US
+// com separador de milhar eram lidos como se fossem BR, produzindo um
+// resultado com 1000x menos magnitude (ex.: "R$ 1,135.00" virava 1.135 em
+// vez de 1135). Corrigido em parseValorBR: o separador DECIMAL e sempre o
+// que ocorre por ULTIMO na string, independente de ser virgula ou ponto.
+console.log('\n=== CORRECAO DE BUG: formato EN-US e ambos os formatos com milhar ===');
+todosPassaram &= check('BUG REAL #13252: "R$ 1,135.00" (EN-US) -> 1135, NAO 1.135', parseValorSolto('R$ 1,135.00'), 1135);
+todosPassaram &= check('"1,135.00" (EN-US, sem "R$") -> 1135', parseValorSolto('1,135.00'), 1135);
+todosPassaram &= check('"R$ 1.135,00" (BR) -> 1135 (regressao explicita)', parseValorSolto('R$ 1.135,00'), 1135);
+todosPassaram &= check('"1.135,00" (BR, sem "R$") -> 1135', parseValorSolto('1.135,00'), 1135);
+todosPassaram &= check('"R$ 12.345,67" (BR, milhar+decimal) -> 12345.67', parseValorSolto('R$ 12.345,67'), 12345.67);
+todosPassaram &= check('"12.345,67" (BR, sem "R$") -> 12345.67', parseValorSolto('12.345,67'), 12345.67);
+todosPassaram &= check('"R$ 12,345.67" (EN-US, milhar+decimal) -> 12345.67', parseValorSolto('R$ 12,345.67'), 12345.67);
+todosPassaram &= check('"12,345.67" (EN-US, sem "R$") -> 12345.67', parseValorSolto('12,345.67'), 12345.67);
+todosPassaram &= check('"R$ 89" (sem separador) -> 89', parseValorSolto('R$ 89'), 89);
+todosPassaram &= check('"89,00" (BR, sem milhar) -> 89', parseValorSolto('89,00'), 89);
+todosPassaram &= check('"0" -> 0', parseValorSolto('0'), 0);
+todosPassaram &= check('"0,00" -> 0', parseValorSolto('0,00'), 0);
+todosPassaram &= check('"0.00" -> 0', parseValorSolto('0.00'), 0);
+
+// Mesmas correcoes verificadas diretamente em parseValorBR (usado tambem
+// pelo parser de Debito/Credito rotulado - garante que a correcao e
+// visivel na funcao compartilhada, nao so no wrapper).
+todosPassaram &= check('parseValorBR("1,135.00") (EN-US) -> 1135', parseValorBR('1,135.00'), 1135);
+todosPassaram &= check('parseValorBR("1.135,00") (BR) -> 1135 (regressao explicita)', parseValorBR('1.135,00'), 1135);
+todosPassaram &= check('parseValorBR("12,345.67") (EN-US) -> 12345.67', parseValorBR('12,345.67'), 12345.67);
+todosPassaram &= check('parseValorBR("12.345,67") (BR) -> 12345.67 (regressao explicita)', parseValorBR('12.345,67'), 12345.67);
+
 console.log(
   '\nResultado geral parseValorSolto:',
   todosPassaram ? 'TODOS OS TESTES PASSARAM' : 'HA TESTES QUE FALHARAM',
