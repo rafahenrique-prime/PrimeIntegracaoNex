@@ -112,7 +112,8 @@ function construirCorpoRequisicao(origin, entradaGate) {
 
 /**
  * @param {string} secret
- * @param {string} timestamp - epoch em segundos, como string
+ * @param {string} timestamp - epoch em milissegundos (compativel com
+ *   Date.now() do backend), como string
  * @param {string} rawBody - EXATAMENTE os bytes que serao enviados como body
  * @returns {string} assinatura hex
  */
@@ -174,7 +175,7 @@ function criarRepositorioEventosHttp(config, opcoes) {
     // tentativa 0 = primeira tentativa; 1..maxRetries = retries adicionais
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const timestamp = String(Math.floor(now() / 1000));
+      const timestamp = String(now());
       const assinatura = calcularAssinatura(cfg.secret, timestamp, rawBody);
       const headers = {
         'Content-Type': 'application/json',

@@ -328,6 +328,32 @@ async function main() {
   const cfgDeEnvVazio = carregarConfiguracaoDeEnv({});
   todosPassaram &= check('objeto de ambiente vazio -> campos undefined (nao inventa valor)', cfgDeEnvVazio.endpoint === undefined && cfgDeEnvVazio.origin === undefined && cfgDeEnvVazio.secret === undefined);
 
+  // ---------- REGRESSAO: X-Nex-Timestamp em MILISSEGUNDOS (bug corrigido) ----------
+  // Bug real do primeiro E2E: client enviava epoch em SEGUNDOS
+  // (String(Math.floor(now()/1000))), backend espera e compara em
+  // MILISSEGUNDOS (String(Date.now())), causando 401 timestamp_out_of_window.
+  // Este bloco usa um `now` injetado FIXO para provar, sem ambiguidade, que
+  // o timestamp enviado e exatamente em ms - nao dividido por 1000.
+  console.log('\n=== REGRESSAO: X-Nex-Timestamp em milissegundos (nao em segundos) ===');
+  {
+    const NOW_FIXO_MS = 1788016148071;
+    const fetchFake = criarFetchFake([{ tipo: 'resposta', status: 200, corpo: { correlationId: 'c-ts-ms', results: [{ eventId: evento15751.eventId, result: 'CREATED' }] } }]);
+    const repo = criarRepositorioEventosHttp(CONFIG_TESTE, { fetchImpl: fetchFake, retryDelayMs: 1, now: () => NOW_FIXO_MS });
+    await repo.enviarEvento(gate15751);
+
+    const chamada = fetchFake.chamadas[0];
+    const timestampEnviado = chamada.opcoes.headers['X-Nex-Timestamp'];
+    const rawBodyEnviado = chamada.opcoes.body;
+
+    todosPassaram &= check('X-Nex-Timestamp = String(now()) exato, em milissegundos', timestampEnviado === '1788016148071');
+    todosPassaram &= check('X-Nex-Timestamp NAO foi dividido por 1000 (nao e epoch em segundos)', timestampEnviado !== '1788016148');
+    todosPassaram &= check('X-Nex-Timestamp tem 13 digitos (epoch ms para datas atuais)', timestampEnviado.length === 13);
+
+    const assinaturaEsperada = calcularAssinatura(CONFIG_TESTE.secret, '1788016148071', rawBodyEnviado);
+    todosPassaram &= check('HMAC calculado sobre "1788016148071." + rawBody (timestamp em ms)', assinaturaEsperada === chamada.opcoes.headers['X-Nex-Signature']);
+    todosPassaram &= check('rawBody assinado = rawBody efetivamente enviado (mesmo objeto logico)', JSON.parse(rawBodyEnviado).events[0].eventId === evento15751.eventId);
+  }
+
   // ---------- 30: garantia estrutural de zero chamada real ----------
   console.log('\n=== 30. Garantia estrutural: nenhum teste deste arquivo usa fetch global real ===');
   const fs = require('fs');
