@@ -264,7 +264,16 @@ class OutboxLocal {
    *
    * @param {string} eventId
    * @param {string} novoStatus
-   * @param {{httpStatus?:number|null, result?:string|null, correlationId?:string|null, ultimoErro?:string|null, incrementarTentativa?:boolean}} [extra]
+   * @param {{httpStatus?:number|null, result?:string|null, correlationId?:string|null,
+   *   ultimoErro?:string|null, incrementarTentativa?:boolean, nextAttemptAt?:string|null}} [extra]
+   *   `nextAttemptAt` (Fase F3.5): quando presente, define a partir de
+   *   quando o item volta a ser elegivel em claimNext() - usado ao
+   *   transicionar para RETRY com backoff calculado. Quando OMITIDO
+   *   (undefined), e sempre limpo para null (elegivel imediatamente) -
+   *   este e o comportamento correto tanto para transicoes terminais
+   *   (SENT/REVIEW_STORED/REJECTED/FAILED, onde next_attempt_at deixa de
+   *   fazer sentido) quanto para recuperarOrfaos() (SENDING orfao ->
+   *   RETRY elegivel JA, sem esperar backoff nenhum).
    */
   async transicionar(eventId, novoStatus, extra) {
     const opc = extra || {};
@@ -293,6 +302,7 @@ class OutboxLocal {
              correlation_id = COALESCE(?, correlation_id),
              ultimo_erro = ?,
              tentativas = ?,
+             next_attempt_at = ?,
              updated_at = ?
            WHERE event_id = ?`,
         )
@@ -303,6 +313,7 @@ class OutboxLocal {
           opc.correlationId != null ? opc.correlationId : null,
           opc.ultimoErro != null ? opc.ultimoErro : null,
           novasTentativas,
+          opc.nextAttemptAt != null ? opc.nextAttemptAt : null,
           agora,
           eventId,
         );
@@ -323,19 +334,35 @@ class OutboxLocal {
    * (isto marca o INICIO de uma tentativa de comunicacao). Retorna null
    * se nao houver nenhum item elegivel.
    *
-   * Preparado para respeitar `next_attempt_at` quando a F3.5 passar a
-   * preenche-lo (itens com next_attempt_at no futuro nao sao elegiveis
-   * ainda) - nesta fase, todo item novo tem next_attempt_at NULL, entao
-   * sempre elegivel imediatamente.
+   * Respeita `next_attempt_at` (Fase F3.5): itens RETRY com next_attempt_at
+   * no futuro nao sao elegiveis; PENDING e sempre elegivel imediatamente;
+   * um RETRY futuro nunca bloqueia um PENDING mais novo, pois a clausula
+   * WHERE ja filtra por elegibilidade ANTES da ordenacao.
+   *
+   * FONTE DE TEMPO (Fase F3.5.1): por padrao usa o relogio real
+   * (`new Date()`) para decidir "agora", preservando compatibilidade com
+   * chamadas existentes (`claimNext()` sem argumento). Quando o chamador
+   * PRECISA de tempo deterministico/injetavel de ponta a ponta (ex.:
+   * SERVICO/processador-outbox-nex.js, que tambem usa o mesmo `now` para
+   * calcular o backoff/next_attempt_at daquela mesma iteracao), pode
+   * passar explicitamente `agora` (Date) - assim a decisao de
+   * ELEGIBILIDADE e o CALCULO de backoff da mesma operacao sempre
+   * enxergam a MESMA fonte de tempo, nunca duas independentes.
    *
    * Ainda com 1 unico processo/writer, a selecao+transicao ocorre dentro
    * de uma unica transacao SQLite, garantindo a semantica atomica correta
    * desde ja (nenhum outro codigo pode "roubar" o mesmo item entre a
    * leitura e a escrita).
    *
+   * @param {Date} [agora] - injetavel para tempo deterministico; default
+   *   `new Date()` (relogio real), preservando o comportamento e a
+   *   assinatura ja usados por chamadores existentes.
    * @returns {Promise<Object|null>}
    */
-  async claimNext() {
+  async claimNext(agora) {
+    const agoraDate = agora || new Date();
+    const agoraIsoStr = agoraDate.toISOString();
+
     this._db.exec('BEGIN');
     try {
       const candidato = this._db
@@ -346,17 +373,16 @@ class OutboxLocal {
              ORDER BY created_at ASC, event_id ASC
              LIMIT 1`,
         )
-        .get(agoraIso());
+        .get(agoraIsoStr);
 
       if (!candidato) {
         this._db.exec('COMMIT');
         return null;
       }
 
-      const agora = agoraIso();
       this._db
         .prepare('UPDATE outbox SET status = ?, tentativas = tentativas + 1, updated_at = ? WHERE event_id = ?')
-        .run(ESTADOS.SENDING, agora, candidato.event_id);
+        .run(ESTADOS.SENDING, agoraIsoStr, candidato.event_id);
 
       this._db.exec('COMMIT');
       return this.buscarPorEventId(candidato.event_id);
