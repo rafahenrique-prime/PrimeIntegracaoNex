@@ -546,6 +546,134 @@ async function main() {
     todosPassaram &= check('AO. #15704 nunca foi enfileirado', item15704 === null);
   }
 
+  // ---------- F4FIX A-H. Indice de Clientes deterministico no dry-run/baseline, independente da ordem de readdir ----------
+  console.log('\n=== F4FIX A-H. executarDryRun/confirmarBaseline usam o Clients export mais recente por mtime, mesmo com ordem de readdir problematica ===');
+  {
+    const dirFix = novoDiretorioTemp();
+    const dbFix = path.join(dirFix, 'db.db');
+
+    const caminhoAtual = escrever(dirFix, 'clientes-A-atual.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'CANELINHA', Código: '316', Status: 'Ativo' }),
+      linhaDe(CLIENTES_HEADER, { Nome: 'CLIENTE SOMENTE NOVO', Código: '999', Status: 'Ativo' }),
+    ]));
+    const caminhoAntigo = escrever(dirFix, 'clientes-B-antigo.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'CANELINHA', Código: '316', Status: 'Ativo' }),
+    ]));
+    const caminhoOutro = escrever(dirFix, 'clientes-C-outro.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'CANELINHA', Código: '316', Status: 'Ativo' }),
+    ]));
+    const caminhoVendas = escrever(dirFix, 'vendas-teste.xls', construirXlsBuffer([
+      VENDAS_HEADER,
+      linhaDe(VENDAS_HEADER, { Número: '90001', Tipo: 'Venda', Data: '8/1/26', Hora: '10:00', Cliente: 'CLIENTE SOMENTE NOVO', 'Valor Pago': 'R$ 10.00 ' }),
+    ]));
+    const caminhoExtrato = escrever(dirFix, 'extrato-teste.xls', bufferExtratoFixture());
+
+    // mtimes explicitos: clientes-A-atual.xls e inequivocamente o MAIS RECENTE de todos.
+    const agora = Date.now();
+    fs.utimesSync(caminhoAntigo, new Date(agora - 300000), new Date(agora - 300000));
+    fs.utimesSync(caminhoOutro, new Date(agora - 200000), new Date(agora - 200000));
+    fs.utimesSync(caminhoVendas, new Date(agora - 100000), new Date(agora - 100000));
+    fs.utimesSync(caminhoExtrato, new Date(agora - 50000), new Date(agora - 50000));
+    fs.utimesSync(caminhoAtual, new Date(agora), new Date(agora));
+
+    // C. Ordem de readdir DELIBERADAMENTE problematica: o Vendas aparece ANTES
+    // do Clients mais recente na listagem bruta - exatamente o cenario real
+    // que expos o bug (clientes-nex.xls, mais antigo, era processado entre o
+    // Clients novo e o arquivo de Vendas).
+    const ordemProblematica = ['clientes-B-antigo.xls', 'vendas-teste.xls', 'clientes-C-outro.xls', 'extrato-teste.xls', 'clientes-A-atual.xls', 'db.db'];
+    const fsOrdemFixa = {
+      readdirSync: () => ordemProblematica,
+      readFileSync: (...args) => fs.readFileSync(...args),
+      statSync: (...args) => fs.statSync(...args),
+      createReadStream: (...args) => fs.createReadStream(...args),
+    };
+
+    const estadoFix = new EstadoBootstrapSqlite(dbFix);
+    const outboxFix = new OutboxLocal(dbFix);
+    const checkpointFix = new CheckpointSqlite(dbFix);
+    const orqFix = new OrquestradorIntegracaoNex({ outbox: outboxFix, checkpoint: checkpointFix });
+    const bootFix = new BootstrapIntegracaoNex({ estado: estadoFix, orquestrador: orqFix, diretorioExports: dirFix, fsImpl: fsOrdemFixa });
+
+    const cutoffFix = '2026-08-01T00:00:00';
+    const relDryFix = await bootFix.executarDryRun(cutoffFix);
+
+    // A/D. Mesmo com um Clients antigo (e o proprio Vendas) processados ANTES
+    // do Clients mais recente na ordem bruta, o cliente que so existe no
+    // Clients mais recente deve resolver (RESOLVED), nunca SEM_MATCH.
+    const relVendasFix = await orqFix.processarArquivo(caminhoVendas, { dryRun: true });
+    const evento90001 = [...relVendasFix.readyToSend, ...relVendasFix.reviewRequired].find((r) => r.event && r.event.nexTransactionId === '90001');
+    todosPassaram &= check('A/D. Vendas classificado com o Clients MAIS RECENTE (RESOLVED=999), mesmo com Clients antigo e Vendas antes dele na ordem de readdir', evento90001 && evento90001.event.nexCustomerCode === '999');
+
+    // B/C. relDryFix e o relatorio RESUMIDO (nao expoe os arrays de eventos) -
+    // reclassificar via _varrerEClassificar (mesmo metodo interno usado por
+    // executarDryRun/confirmarBaseline) prova que ambos usam o MESMO indice,
+    // independente da ordem de readdir.
+    const resultadoInterno = await bootFix._varrerEClassificar(cutoffFix);
+    const entrada90001Interna = [...resultadoInterno.baseline, ...resultadoInterno.novos].find((r) => r.event.nexTransactionId === '90001');
+    todosPassaram &= check('B/C. _varrerEClassificar (usado por dry-run E baseline) tambem resolve 999, independente da ordem de readdir', entrada90001Interna && entrada90001Interna.event.nexCustomerCode === '999');
+
+    // F. Extrato individual sem contexto continua fail-closed (CONTEXTO_CLIENTE_AUSENTE)
+    const relExtratoFix = await orqFix.processarArquivo(caminhoExtrato, { dryRun: true });
+    todosPassaram &= check('F. Extrato individual sem contexto continua CONTEXTO_CLIENTE_AUSENTE (fail-closed preservado)', relExtratoFix.erroArquivo && relExtratoFix.erroArquivo.tipo === 'CONTEXTO_CLIENTE_AUSENTE');
+
+    // G. dry-run continua zero-write (nao gravou outbox/checkpoint)
+    todosPassaram &= check('G. dry-run continua zero-write (outbox vazia)', (await outboxFix.listarPorStatus(ESTADOS.PENDING)).length === 0);
+    todosPassaram &= check('G. dry-run continua zero-write (checkpoint remoto nao tocado)', (await checkpointFix.buscarEvento('SALE_PAID:NEX:90001')) === null);
+
+    // H. confirmarBaseline usa a MESMA classificacao do dry-run (mesmo indice,
+    // ja fixado deterministicamente na primeira chamada de _varrerEClassificar).
+    const relBaseFix = await bootFix.confirmarBaseline(cutoffFix);
+    todosPassaram &= check('H. confirmarBaseline baseliniza o MESMO numero de eventos que o dry-run classificou como baseline', relBaseFix.eventosBaselinados === resultadoInterno.baseline.length);
+
+    estadoFix.fechar(); outboxFix.fechar(); checkpointFix.fechar();
+    fs.rmSync(dirFix, { recursive: true, force: true });
+  }
+
+  // ---------- F4FIX E. Clients parcial mais novo e escolhido, sem heuristica por quantidade de linhas ----------
+  console.log('\n=== F4FIX E. Clients parcial (poucas linhas) mas mais recente por mtime E o escolhido - regra oficial preservada ===');
+  {
+    const dirParcial = novoDiretorioTemp();
+    const dbParcial = path.join(dirParcial, 'db.db');
+
+    const caminhoCompleto = escrever(dirParcial, 'clientes-completo.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'CANELINHA', Código: '316', Status: 'Ativo' }),
+      linhaDe(CLIENTES_HEADER, { Nome: 'MATHEUS HENRIQUE DEPRE', Código: '292', Status: 'Ativo' }),
+    ]));
+    const caminhoParcial = escrever(dirParcial, 'clientes-parcial.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'CLIENTE SO NO PARCIAL', Código: '888', Status: 'Ativo' }),
+    ]));
+    const caminhoVendasParcial = escrever(dirParcial, 'vendas-parcial.xls', construirXlsBuffer([
+      VENDAS_HEADER,
+      linhaDe(VENDAS_HEADER, { Número: '90002', Tipo: 'Venda', Data: '8/1/26', Hora: '11:00', Cliente: 'CLIENTE SO NO PARCIAL', 'Valor Pago': 'R$ 10.00 ' }),
+    ]));
+
+    const agora = Date.now();
+    fs.utimesSync(caminhoCompleto, new Date(agora - 100000), new Date(agora - 100000));
+    fs.utimesSync(caminhoVendasParcial, new Date(agora - 50000), new Date(agora - 50000));
+    // clientes-parcial.xls tem SO 1 linha de dados, mas e o mtime MAIS RECENTE de todos -
+    // deve ser escolhido mesmo assim (regra e mtime, nunca quantidade de linhas).
+    fs.utimesSync(caminhoParcial, new Date(agora), new Date(agora));
+
+    const estadoParcial = new EstadoBootstrapSqlite(dbParcial);
+    const outboxParcial = new OutboxLocal(dbParcial);
+    const checkpointParcial = new CheckpointSqlite(dbParcial);
+    const orqParcial = new OrquestradorIntegracaoNex({ outbox: outboxParcial, checkpoint: checkpointParcial });
+    const bootParcial = new BootstrapIntegracaoNex({ estado: estadoParcial, orquestrador: orqParcial, diretorioExports: dirParcial });
+
+    await bootParcial._varrerEClassificar('2026-08-01T00:00:00');
+    const relVendasParcial = await orqParcial.processarArquivo(caminhoVendasParcial, { dryRun: true });
+    const evento90002 = [...relVendasParcial.readyToSend, ...relVendasParcial.reviewRequired].find((r) => r.event && r.event.nexTransactionId === '90002');
+    todosPassaram &= check('E. Clients PARCIAL (1 linha) mas mais recente por mtime foi o escolhido (RESOLVED=888, nao inventa heuristica por tamanho)', evento90002 && evento90002.event.nexCustomerCode === '888');
+
+    estadoParcial.fechar(); outboxParcial.fechar(); checkpointParcial.fechar();
+    fs.rmSync(dirParcial, { recursive: true, force: true });
+  }
+
   // ---------- AP/AQ/AR/AS. Garantias estruturais ----------
   console.log('\n=== AP-AS. Garantias estruturais: zero HTTP real/POST/Base44/.nx1 ===');
   {

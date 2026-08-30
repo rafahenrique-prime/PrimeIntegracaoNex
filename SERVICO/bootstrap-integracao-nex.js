@@ -31,6 +31,7 @@ const { LOGGER_NULO } = require(path.join(__dirname, 'logger-estruturado'));
 const { RESULTADOS_CONFIRMADOS } = require(path.join(__dirname, 'checkpoint-sqlite'));
 const { ESTADOS: ESTADOS_OUTBOX } = require(path.join(__dirname, 'outbox-local'));
 const { identificarTipoExport, TIPOS_EXPORT } = require(path.join(__dirname, 'orquestrador-integracao-nex'));
+const { lerExportClientes } = require(path.join(__dirname, 'leitor-export-clientes'));
 
 class BootstrapNaoAprovadoError extends Error {
   constructor(statusAtual) {
@@ -208,12 +209,52 @@ class BootstrapIntegracaoNex {
    * executarDryRun() e confirmarBaseline() - garante que ambas enxergam
    * exatamente a mesma classificacao.
    *
+   * CORRECAO (bloqueante F4, achada na preparacao do piloto): antes desta
+   * correcao, este metodo processava CADA arquivo CLIENTES encontrado no
+   * loop via `_orquestrador.processarArquivo`, que SUBSTITUI o indice de
+   * clientes em memoria a cada chamada (`SERVICO/orquestrador-integracao-
+   * nex.js::_processarClientes`). Como o loop segue a ordem BRUTA de
+   * `fs.readdirSync` (nunca ordenada por mtime), um arquivo de VENDAS podia
+   * ser classificado usando o indice de um Clients ANTIGO, se esse Clients
+   * antigo aparecesse depois do mais recente na ordem fisica do diretorio -
+   * dependendo de comportamento do filesystem, nunca de uma decisao
+   * deterministica. Isso e exatamente a mesma pendencia da Fase F3.4 ja
+   * resolvida para `processarArquivoOperacional` (via
+   * `inicializarIndiceClientes()`), mas que nao tinha sido propagada para
+   * este metodo, usado por `executarDryRun`/`confirmarBaseline`.
+   *
+   * CORRECAO: reutiliza EXATAMENTE `inicializarIndiceClientes()` (mesma
+   * regra oficial: latest Clients export por mtime, desempate alfabetico)
+   * UMA VEZ antes do loop, e o loop deixa de reprocessar arquivos CLIENTES
+   * via `processarArquivo` (evitando que um Clients mais antigo, encontrado
+   * depois no loop, sobrescreva o indice ja fixado). O total de linhas dos
+   * arquivos CLIENTES continua contabilizado (via `lerExportClientes`,
+   * reaproveitando o MESMO reader ja usado pelo orquestrador - nenhuma
+   * segunda regra de leitura paralela), preservando o formato do relatorio.
+   *
+   * Se NENHUM Clients existir no diretorio, o comportamento historico e
+   * preservado (indice vazio, Vendas classificada com SEM_MATCH em massa) -
+   * o fail-closed formal (`IndiceClientesIndisponivelError`) continua
+   * reservado exclusivamente ao caminho operacional pos-APPROVED, nunca ao
+   * dry-run/baseline (que devem permanecer inspecionaveis mesmo sem Clients
+   * disponivel ainda).
+   *
    * @param {string} cutoff
    * @returns {Promise<{arquivos: Array<{caminho:string, nome:string, sha256:string}>,
    *   baseline: Array<Object>, novos: Array<Object>, reviewRequired: number,
    *   bloqueados: number, naoReconhecidos: number, totalLinhas: number}>}
    */
   async _varrerEClassificar(cutoff) {
+    if (!this._indiceClientesInicializado) {
+      try {
+        await this.inicializarIndiceClientes();
+      } catch (erro) {
+        if (!(erro instanceof IndiceClientesIndisponivelError)) throw erro;
+        // Sem Clients disponivel: preserva o comportamento historico do
+        // dry-run/baseline (indice vazio -> SEM_MATCH), sem fail-closed.
+      }
+    }
+
     const nomes = this._listarArquivosCandidatos();
     const arquivos = [];
     const baseline = [];
@@ -228,6 +269,27 @@ class BootstrapIntegracaoNex {
       // eslint-disable-next-line no-await-in-loop
       const sha256 = await calcularSha256DeArquivo(caminho, this._fs);
       arquivos.push({ caminho, nome, sha256 });
+
+      const buffer = this._fs.readFileSync(caminho);
+      const tipo = identificarTipoExport(buffer);
+
+      if (tipo === TIPOS_EXPORT.CLIENTES) {
+        // Indice ja fixado deterministicamente acima (inicializarIndiceClientes) -
+        // NUNCA reprocessar aqui, para nao sobrescrever com um Clients mais
+        // antigo so por causa da ordem bruta do diretorio. So contabiliza
+        // linhas para o relatorio, reaproveitando o mesmo reader oficial.
+        try {
+          const nomeArquivo = path.basename(caminho);
+          const { linhas } = lerExportClientes(buffer, { nomeArquivo });
+          totalLinhas += linhas.length;
+        } catch (erro) {
+          // Mesma semantica anterior: erro de leitura de um Clients nao
+          // reconhecido (ARQUIVO_NAO_RECONHECIDO) nao se aplica aqui - erro
+          // de leitura do proprio Clients simplesmente nao soma ao relatorio
+          // (igual ao comportamento previo via relatorio.erroArquivo + continue).
+        }
+        continue;
+      }
 
       // eslint-disable-next-line no-await-in-loop
       const relatorio = await this._orquestrador.processarArquivo(caminho, {
