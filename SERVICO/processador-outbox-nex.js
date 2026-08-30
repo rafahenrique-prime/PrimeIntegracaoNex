@@ -57,6 +57,7 @@
 
 const { ESTADOS, RESULTADO_PARA_ESTADO } = require(require('path').join(__dirname, 'outbox-local'));
 const { RESULTADOS_CONFIRMADOS } = require(require('path').join(__dirname, 'checkpoint-sqlite'));
+const { LOGGER_NULO } = require(require('path').join(__dirname, 'logger-estruturado'));
 
 const POLITICA_PADRAO = Object.freeze({
   maxTentativas: 5,
@@ -139,6 +140,10 @@ class ProcessadorOutboxNex {
     this._transportar = opc.transportar;
     this._politica = { ...POLITICA_PADRAO, ...(opc.politica || {}) };
     this._now = opc.nowImpl || (() => new Date());
+    // Logger injetavel (Fase F3.6) - observabilidade, NUNCA obrigatorio:
+    // sem logger passado, usa no-op e o processador funciona exatamente
+    // como antes (comportamento/testes da F3.5 preservados).
+    this._logger = opc.logger || LOGGER_NULO;
   }
 
   /**
@@ -151,7 +156,11 @@ class ProcessadorOutboxNex {
    * @returns {Promise<Array<Object>>}
    */
   async recuperarPendencias() {
-    return this._outbox.recuperarOrfaos();
+    const recuperados = await this._outbox.recuperarOrfaos();
+    for (const item of recuperados) {
+      this._logger.warn('processadorOutbox', 'OUTBOX_RECOVERY', { eventId: item.eventId, contentHash: item.contentHash, tentativas: item.tentativas });
+    }
+    return recuperados;
   }
 
   /**
@@ -174,6 +183,8 @@ class ProcessadorOutboxNex {
     const item = await this._outbox.claimNext(agora);
     if (!item) return { processado: false, motivo: 'FILA_VAZIA' };
 
+    this._logger.debug('processadorOutbox', 'OUTBOX_CLAIM', { eventId: item.eventId, tentativa: item.tentativas });
+
     let resposta;
     try {
       resposta = await this._transportar(item);
@@ -192,12 +203,15 @@ class ProcessadorOutboxNex {
     if (classificacao.tipo === 'SUCESSO') {
       await this._outbox.registrarResultado(item.eventId, resposta);
       await this._registrarNoCheckpoint(item, resposta);
+      const eventoLog = classificacao.novoEstado === ESTADOS.REVIEW_STORED ? 'OUTBOX_REVIEW_STORED' : 'OUTBOX_SENT';
+      this._logger.info('processadorOutbox', eventoLog, { eventId: item.eventId, result: resposta.result, correlationId: resposta.correlationId, httpStatus: resposta.httpStatus });
       return { processado: true, eventId: item.eventId, resultado: 'SUCESSO', novoEstado: classificacao.novoEstado };
     }
 
     if (classificacao.tipo === 'REJEITADO_PERMANENTE') {
       await this._outbox.registrarResultado(item.eventId, resposta);
       await this._registrarNoCheckpoint(item, resposta);
+      this._logger.warn('processadorOutbox', 'OUTBOX_REJECTED', { eventId: item.eventId, httpStatus: resposta.httpStatus, correlationId: resposta.correlationId });
       return { processado: true, eventId: item.eventId, resultado: 'REJEITADO_PERMANENTE' };
     }
 
@@ -209,6 +223,7 @@ class ProcessadorOutboxNex {
         ultimoErro: resposta.erro || `Erro tecnico permanente (HTTP ${resposta.httpStatus}) - nao sera tentado novamente automaticamente.`,
       });
       await this._registrarNoCheckpoint(item, resposta);
+      this._logger.error('processadorOutbox', 'OUTBOX_FAILED', { eventId: item.eventId, httpStatus: resposta.httpStatus, motivo: 'ERRO_TECNICO_PERMANENTE' });
       return { processado: true, eventId: item.eventId, resultado: 'ERRO_TECNICO_PERMANENTE' };
     }
 
@@ -227,6 +242,7 @@ class ProcessadorOutboxNex {
         ultimoErro: (resposta.erro || 'Falha transitoria') + ` - limite de ${this._politica.maxTentativas} tentativas esgotado.`,
       });
       await this._registrarNoCheckpoint(item, resposta);
+      this._logger.error('processadorOutbox', 'OUTBOX_FAILED', { eventId: item.eventId, tentativas: tentativasFeitas, motivo: 'LIMITE_TENTATIVAS_ESGOTADO' });
       return { processado: true, eventId: item.eventId, resultado: 'FAILED_LIMITE_TENTATIVAS' };
     }
 
@@ -239,6 +255,7 @@ class ProcessadorOutboxNex {
       ultimoErro: resposta.erro || 'Falha transitoria (sanitizado).',
       nextAttemptAt: proximaTentativaEm,
     });
+    this._logger.warn('processadorOutbox', 'OUTBOX_RETRY', { eventId: item.eventId, tentativa: tentativasFeitas, nextAttemptAt: proximaTentativaEm, httpStatus: resposta.httpStatus });
     return { processado: true, eventId: item.eventId, resultado: 'RETRY', nextAttemptAt: proximaTentativaEm };
   }
 

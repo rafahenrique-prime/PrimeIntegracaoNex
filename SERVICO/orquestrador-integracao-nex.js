@@ -42,6 +42,7 @@ const { gerarEventosDeVenda, gerarEventoDeTransacaoCliente } = require(path.join
 const { avaliarGateEnvio } = require(path.join(__dirname, '..', 'SRC', 'gate-envio-evento-nex'));
 const { construirEventoParaEnvio } = require(path.join(__dirname, 'repositorio-eventos-http'));
 const { ConflitoDeConteudoError } = require(path.join(__dirname, 'outbox-local'));
+const { LOGGER_NULO } = require(path.join(__dirname, 'logger-estruturado'));
 
 const TIPOS_EXPORT = Object.freeze({
   CLIENTES: 'CLIENTES',
@@ -154,6 +155,10 @@ class OrquestradorIntegracaoNex {
     // recente antes de processar Vendas - revisao de persistencia deste
     // contexto fica para antes da F4, conforme planejamento).
     this._indiceClientes = criarIndiceClientes([]);
+    // Logger injetavel (Fase F3.6) - observabilidade, NUNCA obrigatorio:
+    // sem logger passado, usa no-op e o orquestrador funciona exatamente
+    // como antes (comportamento/testes da F3.4 preservados).
+    this._logger = opc.logger || LOGGER_NULO;
   }
 
   /**
@@ -178,6 +183,34 @@ class OrquestradorIntegracaoNex {
    * @returns {Promise<Object>} relatorio estruturado do processamento
    */
   async processarArquivo(caminho, opcoes) {
+    const inicio = Date.now();
+    this._logger.info('orquestrador', 'PROCESSAMENTO_INICIADO', { arquivo: caminho });
+    const relatorio = await this._processarArquivoInterno(caminho, opcoes);
+    const durationMs = Date.now() - inicio;
+
+    if (relatorio.erroArquivo) {
+      this._logger.warn('orquestrador', 'PROCESSAMENTO_FALHOU', {
+        arquivo: caminho, tipoExport: relatorio.tipoExport, erroArquivo: relatorio.erroArquivo, durationMs,
+      });
+    } else {
+      this._logger.info('orquestrador', 'PROCESSAMENTO_CONCLUIDO', {
+        arquivo: caminho,
+        tipoExport: relatorio.tipoExport,
+        totalLinhas: relatorio.totalLinhas,
+        readyToSend: relatorio.readyToSend.length,
+        reviewRequired: relatorio.reviewRequired.length,
+        bloqueadosParaAutomacao: relatorio.bloqueadosParaAutomacao.length,
+        enfileirados: relatorio.enfileirados.length,
+        ignoradosCheckpoint: relatorio.ignoradosCheckpoint.length,
+        conflitos: relatorio.conflitos.length,
+        erros: relatorio.erros.length,
+        durationMs,
+      });
+    }
+    return relatorio;
+  }
+
+  async _processarArquivoInterno(caminho, opcoes) {
     const opc = opcoes || {};
     const dryRun = opc.dryRun === true;
 
@@ -328,8 +361,13 @@ class OrquestradorIntegracaoNex {
     const resultadoGate = avaliarGateEnvio(entrada);
     relatorio.eventosGerados.push(resultadoGate);
 
-    if (resultadoGate.status === 'READY_TO_SEND') relatorio.readyToSend.push(resultadoGate);
-    else relatorio.reviewRequired.push(resultadoGate);
+    if (resultadoGate.status === 'READY_TO_SEND') {
+      relatorio.readyToSend.push(resultadoGate);
+      this._logger.debug('orquestrador', 'EVENTO_GERADO', { eventId: entrada.eventId, eventType: entrada.eventType, nexTransactionId: entrada.nexTransactionId, sourceStatus: resultadoGate.status });
+    } else {
+      relatorio.reviewRequired.push(resultadoGate);
+      this._logger.debug('orquestrador', 'EVENTO_REVIEW_REQUIRED', { eventId: entrada.eventId || null, eventType: entrada.eventType || null, nexTransactionId: entrada.nexTransactionId, motivo: resultadoGate.reason });
+    }
 
     // Sem eventId real (UNCLASSIFIED/INVALID_IDENTITY) - nunca pode virar
     // envio financeiro, e nao tem identidade para entrar na outbox.
@@ -337,6 +375,7 @@ class OrquestradorIntegracaoNex {
 
     if (!EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO.has(entrada.eventType)) {
       relatorio.bloqueadosParaAutomacao.push(resultadoGate);
+      this._logger.debug('orquestrador', 'EVENTO_BLOQUEADO_AUTOMACAO', { eventId: entrada.eventId, eventType: entrada.eventType });
       return;
     }
 
@@ -351,6 +390,7 @@ class OrquestradorIntegracaoNex {
       const jaConfirmado = await this._checkpoint.eventoJaConfirmado(eventoParaEnvio.eventId, eventoParaEnvio.contentHash);
       if (jaConfirmado) {
         relatorio.ignoradosCheckpoint.push(eventoParaEnvio.eventId);
+        this._logger.debug('orquestrador', 'EVENTO_JA_CONFIRMADO', { eventId: eventoParaEnvio.eventId, contentHash: eventoParaEnvio.contentHash });
         return;
       }
     }
@@ -361,6 +401,7 @@ class OrquestradorIntegracaoNex {
       const resultadoEnqueue = await this._outbox.enqueue(eventoParaEnvio);
       if (resultadoEnqueue.criado) {
         relatorio.enfileirados.push(eventoParaEnvio.eventId);
+        this._logger.debug('orquestrador', 'OUTBOX_ENFILEIRADO', { eventId: eventoParaEnvio.eventId, eventType: eventoParaEnvio.eventType, contentHash: eventoParaEnvio.contentHash, sourceStatus: eventoParaEnvio.sourceStatus });
       }
       // criado:false com motivo JA_ENFILEIRADO_MESMO_HASH e um no-op
       // idempotente esperado (reprocessamento de arquivo ja visto) - nao
@@ -368,8 +409,10 @@ class OrquestradorIntegracaoNex {
     } catch (erro) {
       if (erro instanceof ConflitoDeConteudoError) {
         relatorio.conflitos.push({ eventId: eventoParaEnvio.eventId, mensagem: erro.message });
+        this._logger.warn('orquestrador', 'OUTBOX_CONFLITO_HASH', { eventId: eventoParaEnvio.eventId });
       } else {
         relatorio.erros.push({ tipo: 'FALHA_AO_ENFILEIRAR', eventId: eventoParaEnvio.eventId, mensagem: erro.message });
+        this._logger.error('orquestrador', 'FALHA_AO_ENFILEIRAR', { eventId: eventoParaEnvio.eventId, erro });
       }
     }
   }

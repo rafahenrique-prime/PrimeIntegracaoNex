@@ -30,6 +30,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { LOGGER_NULO } = require(path.join(__dirname, 'logger-estruturado'));
 
 const EXTENSOES_PADRAO = ['.xls', '.xlsx'];
 
@@ -113,6 +114,10 @@ class DetectorExportsNex {
     this._sleep = opcoes.sleepImpl || sleepPadrao;
     this._fs = opcoes.fsImpl || fs;
     this._onErro = typeof opcoes.onErro === 'function' ? opcoes.onErro : () => {};
+    // Logger injetavel (Fase F3.6) - observabilidade, NUNCA obrigatorio:
+    // se nao for passado, usa um logger no-op e o detector funciona
+    // exatamente como antes (comportamento/testes da F3.3 preservados).
+    this._logger = opcoes.logger || LOGGER_NULO;
 
     this._ultimoProcessado = new Map(); // caminho -> {tamanho, mtimeMs} do ultimo conteudo ja avaliado (estavel ou nao)
     this._avaliacoesEmAndamento = new Map(); // caminho -> Promise, evita avaliar o mesmo arquivo em paralelo
@@ -136,6 +141,7 @@ class DetectorExportsNex {
    */
   iniciar() {
     this._parado = false;
+    this._logger.info('detector', 'DETECTOR_INICIADO', { diretorio: this._diretorio });
     this.varrerAgora();
 
     try {
@@ -144,8 +150,12 @@ class DetectorExportsNex {
         const caminho = path.join(this._diretorio, nomeArquivo);
         this._agendarAvaliacao(caminho);
       });
-      this._watcher.on('error', (erro) => this._onErro({ tipo: 'ERRO_WATCHER', erro }));
+      this._watcher.on('error', (erro) => {
+        this._logger.warn('detector', 'ERRO_WATCHER', { erro: erro && erro.message });
+        this._onErro({ tipo: 'ERRO_WATCHER', erro });
+      });
     } catch (erro) {
+      this._logger.warn('detector', 'DIRETORIO_INDISPONIVEL_PARA_WATCHER', { erro: erro && erro.message });
       this._onErro({ tipo: 'DIRETORIO_INDISPONIVEL_PARA_WATCHER', erro });
     }
 
@@ -171,6 +181,7 @@ class DetectorExportsNex {
       clearInterval(this._timerPolling);
       this._timerPolling = null;
     }
+    this._logger.info('detector', 'DETECTOR_PARADO', {});
   }
 
   /**
@@ -246,6 +257,7 @@ class DetectorExportsNex {
 
     const primeira = await statSeguro(caminho, this._fs);
     if (primeira.erro) {
+      this._logger.warn('detector', 'ARQUIVO_INACESSIVEL', { caminho, erro: primeira.erro && primeira.erro.message });
       this._onErro({ tipo: 'ARQUIVO_INACESSIVEL', caminho, erro: primeira.erro });
       return { ignorado: 'ARQUIVO_INACESSIVEL' };
     }
@@ -267,6 +279,7 @@ class DetectorExportsNex {
     if (segunda.stat.size !== primeira.stat.size || segunda.stat.mtimeMs !== primeira.stat.mtimeMs) {
       // Arquivo ainda sendo escrito - nao registra `_ultimoProcessado` (a
       // proxima avaliacao, seja por watcher ou polling, comeca do zero).
+      this._logger.debug('detector', 'ARQUIVO_INSTAVEL', { caminho: caminho });
       return { ignorado: 'ARQUIVO_INSTAVEL_AINDA_SENDO_ESCRITO' };
     }
 
@@ -294,6 +307,7 @@ class DetectorExportsNex {
       mtime: segunda.stat.mtime,
       sha256,
     };
+    this._logger.info('detector', 'ARQUIVO_PRONTO', { caminho, nomeArquivo, tamanho: info.tamanho, sha256Arquivo: sha256 });
     await this._onArquivoPronto(info);
     return { emitido: true, sha256 };
   }
