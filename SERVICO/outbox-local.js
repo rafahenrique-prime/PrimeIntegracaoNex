@@ -450,6 +450,19 @@ class OutboxLocal {
     return linhas.map(linhaParaObjeto);
   }
 
+  /**
+   * Lista todos os itens em um determinado status (ex.: SENT,
+   * REVIEW_STORED) - usado pela Fase F3.7 (auditarConsistencia) para
+   * cruzar itens terminais da outbox contra o checkpoint. Somente
+   * leitura, nao muda nenhum estado.
+   * @param {string} status - um de ESTADOS
+   * @returns {Promise<Array<Object>>}
+   */
+  async listarPorStatus(status) {
+    const linhas = this._db.prepare('SELECT * FROM outbox WHERE status = ? ORDER BY created_at ASC').all(status);
+    return linhas.map(linhaParaObjeto);
+  }
+
   /** Fecha a conexao com o banco. */
   fechar() {
     this._db.close();

@@ -123,6 +123,7 @@ function relatorioVazio(caminho, tipoExport) {
     bloqueadosParaAutomacao: [],
     enfileirados: [],
     ignoradosCheckpoint: [],
+    ignoradosAntiReplay: [],
     conflitos: [],
     erros: [],
     indiceAtualizado: false,
@@ -159,6 +160,18 @@ class OrquestradorIntegracaoNex {
     // sem logger passado, usa no-op e o orquestrador funciona exatamente
     // como antes (comportamento/testes da F3.4 preservados).
     this._logger = opc.logger || LOGGER_NULO;
+    // Ponto de extensao ADITIVO para a Fase F3.7 (anti-replay de
+    // bootstrap) - por padrao NULL, o que preserva 100% do comportamento
+    // ja homologado nas Fases F3.4/F3.5/F3.6 (nenhum teste anterior passa
+    // isso, entao nada muda para eles). Quando fornecido, e chamado com o
+    // evento ja construido no formato HTTP (mesmo shape de
+    // construirEventoParaEnvio) ANTES do checkpoint/outbox - se retornar
+    // false, o evento e contabilizado em `ignoradosAntiReplay` e NUNCA
+    // chega ao checkpoint/outbox. O modulo de bootstrap
+    // (SERVICO/bootstrap-integracao-nex.js) e quem decide a logica de
+    // anti-replay em si - o orquestrador so oferece o gancho, sem conhecer
+    // baseline/cutoff/estado de bootstrap.
+    this._filtroElegibilidade = typeof opc.filtroElegibilidade === 'function' ? opc.filtroElegibilidade : null;
   }
 
   /**
@@ -380,6 +393,12 @@ class OrquestradorIntegracaoNex {
     }
 
     const eventoParaEnvio = construirEventoParaEnvio(resultadoGate);
+
+    if (this._filtroElegibilidade && this._filtroElegibilidade(eventoParaEnvio) === false) {
+      relatorio.ignoradosAntiReplay.push(eventoParaEnvio.eventId);
+      this._logger.debug('orquestrador', 'EVENTO_IGNORADO_ANTI_REPLAY', { eventId: eventoParaEnvio.eventId });
+      return;
+    }
 
     if (dryRun) {
       // Simulacao: NAO consulta checkpoint, NAO toca a outbox.

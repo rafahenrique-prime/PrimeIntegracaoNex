@@ -313,4 +313,4 @@ class DetectorExportsNex {
   }
 }
 
-module.exports = { DetectorExportsNex, EXTENSOES_PADRAO };
+module.exports = { DetectorExportsNex, EXTENSOES_PADRAO, nomeEhCandidatoValido };
