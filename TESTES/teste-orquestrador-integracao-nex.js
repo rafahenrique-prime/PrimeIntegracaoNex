@@ -201,24 +201,29 @@ async function main() {
     todosPassaram &= check('AC. #15704 eventId real homologado', evento15704 && evento15704.event.eventId === 'SALE_PARTIALLY_PAID:NEX:15704');
   }
 
-  // ---------- M/N. SALE_CANCELLED: gerado localmente, bloqueado para automacao ----------
-  console.log('\n=== M/N. SALE_CANCELLED gerado localmente mas bloqueado de ir para a outbox ===');
+  // ---------- M/N. SALE_CANCELLED: liberado, homologado E2E (#9929) ----------
+  console.log('\n=== M/N. SALE_CANCELLED liberado, elegivel entra na outbox como qualquer outro ===');
   {
     const canceladoBase = relatorioVendas.eventosGerados.filter((r) => r.event.nexTransactionId === '16001');
     todosPassaram &= check('M. #16001 gera pelo menos 2 entradas (base + SALE_CANCELLED)', canceladoBase.length >= 2);
     const entradaCancelada = canceladoBase.find((r) => r.event.eventType === 'SALE_CANCELLED');
     todosPassaram &= check('M. SALE_CANCELLED foi classificado/gerado localmente', entradaCancelada != null);
     todosPassaram &= check(
-      'N. SALE_CANCELLED aparece em bloqueadosParaAutomacao, nunca em enfileirados',
-      relatorioVendas.bloqueadosParaAutomacao.some((r) => r.event.eventType === 'SALE_CANCELLED') &&
-        !relatorioVendas.enfileirados.includes(entradaCancelada.event.eventId),
+      'N. EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO inclui SALE_CANCELLED',
+      EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO.has('SALE_CANCELLED'),
     );
-    todosPassaram &= check(
-      'N. EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO nao inclui SALE_CANCELLED',
-      !EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO.has('SALE_CANCELLED'),
-    );
-    const outboxCancelado = await outbox.buscarPorEventId(entradaCancelada.event.eventId);
-    todosPassaram &= check('N. SALE_CANCELLED nunca chega a existir na outbox', outboxCancelado === null);
+    if (entradaCancelada && entradaCancelada.status === 'READY_TO_SEND') {
+      todosPassaram &= check(
+        'N. SALE_CANCELLED READY_TO_SEND nao aparece em bloqueadosParaAutomacao',
+        !relatorioVendas.bloqueadosParaAutomacao.some((r) => r.event.eventType === 'SALE_CANCELLED'),
+      );
+      todosPassaram &= check(
+        'N. SALE_CANCELLED READY_TO_SEND foi enfileirado',
+        relatorioVendas.enfileirados.includes(entradaCancelada.event.eventId),
+      );
+      const outboxCancelado = await outbox.buscarPorEventId(entradaCancelada.event.eventId);
+      todosPassaram &= check('N. SALE_CANCELLED READY_TO_SEND existe na outbox', outboxCancelado != null);
+    }
   }
 
   // ---------- O. UNCLASSIFIED nunca vira evento financeiro ----------

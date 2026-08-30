@@ -16,7 +16,6 @@ const fs = require('fs');
 const PROJETO = path.join(__dirname, '..');
 const { prepararEventoValidado, validarTravas } = require(path.join(PROJETO, 'SCRIPTS', 'e2e-post-unico-9929'));
 const { avaliarGateEnvio } = require(path.join(PROJETO, 'SRC', 'gate-envio-evento-nex'));
-const { EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO } = require(path.join(PROJETO, 'SERVICO', 'orquestrador-integracao-nex'));
 
 function check(desc, cond) {
   const booleano = !!cond;
@@ -98,8 +97,8 @@ function main() {
     todosPassaram &= check(nome + ' ainda referencia ' + marcador, codigo.includes(marcador));
   }
 
-  console.log('\n=== SALE_CANCELLED continua fora da allowlist automatica local ===');
-  todosPassaram &= check('EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO NAO inclui SALE_CANCELLED (script nao usa nem altera essa allowlist)', !EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO.has('SALE_CANCELLED'));
+  console.log('\n=== Este script E2E nao usa nem altera o orquestrador/allowlist ===');
+  todosPassaram &= check('script nao importa orquestrador-integracao-nex (nao usa nem altera a allowlist)', !codigoDoScript.includes("require(") || !/require\([^)]*orquestrador-integracao-nex/.test(codigoDoScript));
 
   console.log('\n=== Pre-condicao do gate reconfirmada de forma independente ===');
   todosPassaram &= check('avaliarGateEnvio confirma READY_TO_SEND para o payload transportado', avaliarGateEnvio(eventoEnviado.payload).status === 'READY_TO_SEND');

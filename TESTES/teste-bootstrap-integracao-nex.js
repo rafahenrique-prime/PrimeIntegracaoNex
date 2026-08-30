@@ -273,7 +273,7 @@ async function main() {
   }
 
   // ---------- S/T/U/V. Pos-APPROVED: novo evento, REVIEW_REQUIRED, SALE_CANCELLED, UNCLASSIFIED ----------
-  console.log('\n=== S/T/U/V. Pos-APPROVED: evento novo segue fluxo normal; SALE_CANCELLED continua bloqueado; UNCLASSIFIED nunca financeiro ===');
+  console.log('\n=== S/T/U/V. Pos-APPROVED: evento novo segue fluxo normal; SALE_CANCELLED (liberado) tambem enfileira; UNCLASSIFIED nunca financeiro ===');
   {
     // arquivo de vendas com: evento baseline identico (15751), evento novo pos-cutoff,
     // SALE_CANCELLED pos-cutoff, e review_required pos-cutoff
@@ -290,9 +290,8 @@ async function main() {
     todosPassaram &= check('S. #15751 (identico ao baseline) -> ignoradosAntiReplay, nao enfileirado', rel.ignoradosAntiReplay.includes('SALE_PAID:NEX:15751') && !rel.enfileirados.includes('SALE_PAID:NEX:15751'));
     todosPassaram &= check('S. #88001 (novo, pos-cutoff) -> enfileirado normalmente', rel.enfileirados.includes('SALE_PAID:NEX:88001'));
 
-    const entradaCancelada = rel.bloqueadosParaAutomacao.find((r) => r.event.eventType === 'SALE_CANCELLED' && r.event.nexTransactionId === '88002');
-    todosPassaram &= check('U. SALE_CANCELLED pos-cutoff continua BLOQUEADO para automacao (bootstrap nao libera)', entradaCancelada != null);
-    todosPassaram &= check('U. SALE_CANCELLED nunca chega na outbox mesmo pos-approved', (await outbox.buscarPorEventId('SALE_CANCELLED:NEX:88002')) === null);
+    todosPassaram &= check('U. SALE_CANCELLED pos-cutoff (liberado) enfileirado normalmente', rel.enfileirados.includes('SALE_CANCELLED:NEX:88002'));
+    todosPassaram &= check('U. SALE_CANCELLED pos-cutoff (liberado) existe na outbox', (await outbox.buscarPorEventId('SALE_CANCELLED:NEX:88002')) != null);
 
     const entradaUnclassified = rel.eventosGerados.find((r) => r.event && r.event.nexTransactionId === '88003');
     todosPassaram &= check('V. #88003 sem valores -> REVIEW_REQUIRED/UNCLASSIFIED_EVENT, nunca financeiro', entradaUnclassified && entradaUnclassified.reason === 'UNCLASSIFIED_EVENT');

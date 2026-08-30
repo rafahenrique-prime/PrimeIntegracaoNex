@@ -18,13 +18,15 @@
  * responsabilidade de uma fase futura (F3.5 em diante), que consumira a
  * outbox via claimNext()/enviarEvento(), nao deste modulo.
  *
- * EVENTTYPES LIBERADOS PARA ENVIO AUTOMATICO FUTURO: apenas os 4 ja
- * homologados via E2E real (SALE_PAID, DEBT_CREATED, SALE_PARTIALLY_PAID,
- * DEBT_PAYMENT). SALE_CANCELLED pode ser GERADO/CLASSIFICADO localmente
- * (a logica de dominio ja existente em SRC/gerador-evento-venda-nex.js nao
- * e alterada nem bloqueada), mas este orquestrador delibaradamente NAO o
- * enfileira na outbox - fica visivel apenas no relatorio, ate ser
- * homologado manualmente como os demais.
+ * EVENTTYPES LIBERADOS PARA ENVIO AUTOMATICO: os 5 ja homologados via E2E
+ * real (SALE_PAID, DEBT_CREATED, SALE_PARTIALLY_PAID, DEBT_PAYMENT,
+ * SALE_CANCELLED - homologado E2E real #9929, CREATED->UNCHANGED, zero
+ * mutacao financeira). SALE_CANCELLED e inbox-only no PRIME COBRANCAS:
+ * nunca cancela Venda, reverte Parcela, altera Recibo ou baixa divida -
+ * apenas registra o fato factual de cancelamento (mesmo nexTransactionId/
+ * identityKey da venda original). Qualquer outro eventType classificado
+ * (hoje, UNCLASSIFIED) e gerado/reportado mas NUNCA enfileirado, ate
+ * passar pelo mesmo ritual de homologacao manual.
  */
 
 const fs = require('fs');
@@ -52,9 +54,9 @@ const TIPOS_EXPORT = Object.freeze({
 });
 
 /**
- * EventTypes cujo enfileiramento na outbox e permitido hoje - os 4 ja
- * homologados via E2E real (#15751/#15756/#15704/#15758). Qualquer outro
- * eventType classificado (hoje, so SALE_CANCELLED) e gerado/reportado mas
+ * EventTypes cujo enfileiramento na outbox e permitido hoje - os 5 ja
+ * homologados via E2E real (#15751/#15756/#15704/#15758/#9929). Qualquer
+ * outro eventType classificado (hoje, UNCLASSIFIED) e gerado/reportado mas
  * NUNCA enfileirado, ate passar pelo mesmo ritual de homologacao manual.
  */
 const EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO = new Set([
@@ -62,6 +64,7 @@ const EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO = new Set([
   'DEBT_CREATED',
   'SALE_PARTIALLY_PAID',
   'DEBT_PAYMENT',
+  'SALE_CANCELLED',
 ]);
 
 /**
