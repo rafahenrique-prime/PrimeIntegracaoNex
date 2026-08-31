@@ -1,20 +1,28 @@
 'use strict';
 
 /**
- * CLI dedicado (F5.5-FIX2/FIX3) para reabrir manualmente UM evento
- * terminal FAILED na outbox, via OutboxLocal.reabrirFailed() (SERVICO/
- * outbox-local.js). Ferramenta operacional pontual, auditavel, FORA do
- * loop automatico (nunca chamada pelo detector/runner/processador).
+ * CLI dedicado (F5.5-FIX2/FIX3/FIX11) para reabrir manualmente UM
+ * evento terminal FAILED na outbox, via OutboxLocal.reabrirFailed()
+ * (SERVICO/outbox-local.js). Ferramenta operacional pontual, auditavel,
+ * FORA do loop automatico (nunca chamada pelo detector/runner/
+ * processador).
  *
- * TRAVA DESTA PRIMEIRA VERSAO (homologacao do secret corrigido):
- * aceita SOMENTE o eventId "SALE_PAID:NEX:15770" - qualquer outro
- * eventId falha fechado, propositalmente, para eliminar o risco de
- * atingir #15768/#15769 (ou qualquer outro FAILED futuro) por engano
- * nesta primeira prova real. Generalizar exige uma decisao consciente
- * futura, fora desta tarefa.
+ * GENERALIZACAO (F5.5-FIX11): a trava original de homologacao (aceitar
+ * SOMENTE "SALE_PAID:NEX:15770") foi substituida por uma allowlist de
+ * eventType - reaproveita EXATAMENTE a mesma constante ja usada pelo
+ * orquestrador (SERVICO/orquestrador-integracao-nex.js::
+ * EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO) para nunca ficar
+ * dessincronizada da lista real de tipos liberados para automacao.
+ * Qualquer eventType fora dessa lista falha fechado. A protecao
+ * primaria contra reabrir o evento errado continua sendo o fluxo
+ * humano-no-loop: BEFORE completo (incluindo eventType/sourceStatus)
+ * exibido antes de exigir a confirmacao exata "REABRIR".
  *
- * NUNCA: imprime payload, imprime secret, faz HTTP diretamente, altera
- * checkpoint diretamente, reabre mais de um item por execucao.
+ * NUNCA: imprime payload, imprime secret/HMAC, faz HTTP diretamente,
+ * altera checkpoint diretamente, reabre mais de um item por execucao,
+ * aceita lista/lote/wildcard, tenta resolver cliente ou alterar
+ * sourceStatus (REVIEW_REQUIRED permanece REVIEW_REQUIRED ate o
+ * backend decidir, nunca "promovido" localmente).
  *
  * A logica central (executarReabertura) e exportada separadamente de
  * main() para ser testavel offline sem stdin real e sem tocar o banco
@@ -28,10 +36,11 @@
 const path = require('path');
 const readline = require('readline');
 const { OutboxLocal, ESTADOS } = require(path.join(__dirname, '..', 'SERVICO', 'outbox-local'));
+const { EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO } = require(path.join(__dirname, '..', 'SERVICO', 'orquestrador-integracao-nex'));
 
-const EVENT_ID_PERMITIDO = 'SALE_PAID:NEX:15770';
 const DB_PATH_PADRAO = path.join(__dirname, '..', 'OUTPUT', 'integracao-nex.db');
 const CONFIRMACAO_ESPERADA = 'REABRIR';
+const AVISO_FORTE = 'Esta operacao reabrira exatamente 1 evento FAILED para nova tentativa de transporte.';
 
 function parseArgs(argv) {
   const args = {};
@@ -48,6 +57,8 @@ function resumoSemPayload(item) {
   if (!item) return null;
   return {
     eventId: item.eventId,
+    eventType: item.eventType,
+    sourceStatus: item.sourceStatus,
     status: item.status,
     tentativas: item.tentativas,
     httpStatus: item.httpStatus,
@@ -74,7 +85,7 @@ function perguntarViaStdin(texto) {
  * imprimir diretamente - main() (CLI real) e responsavel por imprimir.
  *
  * @param {{eventId:string, motivo:string, operador?:string, dbPath?:string,
- *   eventIdPermitido?:string, confirmar?:(texto:string)=>Promise<string>,
+ *   eventTypesPermitidos?:Set<string>, confirmar?:(texto:string)=>Promise<string>,
  *   log?:(...args:any[])=>void}} opcoes
  * @returns {Promise<{sucesso:boolean, motivoFalha?:string, antes?:Object,
  *   depois?:Object, cancelado?:boolean}>}
@@ -82,7 +93,7 @@ function perguntarViaStdin(texto) {
 async function executarReabertura(opcoes) {
   const opc = opcoes || {};
   const dbPath = opc.dbPath || DB_PATH_PADRAO;
-  const eventIdPermitido = opc.eventIdPermitido || EVENT_ID_PERMITIDO;
+  const eventTypesPermitidos = opc.eventTypesPermitidos || EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO;
   const confirmar = opc.confirmar || perguntarViaStdin;
   const log = opc.log || (() => {});
 
@@ -92,9 +103,6 @@ async function executarReabertura(opcoes) {
   if (!opc.motivo || !String(opc.motivo).trim()) {
     return { sucesso: false, motivoFalha: 'MOTIVO_OBRIGATORIO' };
   }
-  if (opc.eventId !== eventIdPermitido) {
-    return { sucesso: false, motivoFalha: 'EVENT_ID_NAO_PERMITIDO' };
-  }
 
   const outbox = new OutboxLocal(dbPath);
   try {
@@ -102,11 +110,15 @@ async function executarReabertura(opcoes) {
     if (!antes) {
       return { sucesso: false, motivoFalha: 'EVENT_ID_NAO_ENCONTRADO' };
     }
+    if (!eventTypesPermitidos.has(antes.eventType)) {
+      return { sucesso: false, motivoFalha: 'EVENT_TYPE_NAO_PERMITIDO', antes: resumoSemPayload(antes) };
+    }
     if (antes.status !== ESTADOS.FAILED) {
       return { sucesso: false, motivoFalha: 'STATUS_NAO_FAILED', antes: resumoSemPayload(antes) };
     }
 
     log('BEFORE (sem payload):', JSON.stringify(resumoSemPayload(antes), null, 2));
+    log(AVISO_FORTE);
 
     const resposta = await confirmar(`Para confirmar a reabertura de "${opc.eventId}", digite exatamente ${CONFIRMACAO_ESPERADA}: `);
     if (resposta !== CONFIRMACAO_ESPERADA) {
@@ -137,14 +149,14 @@ async function main() {
   } else if (resultado.motivoFalha === 'MOTIVO_OBRIGATORIO') {
     console.error('ERRO: --motivo obrigatorio (nao vazio). Abortando. Nenhuma mutacao realizada.');
     process.exitCode = 1;
-  } else if (resultado.motivoFalha === 'EVENT_ID_NAO_PERMITIDO') {
-    console.error(
-      `ERRO: esta versao do CLI aceita SOMENTE o eventId "${EVENT_ID_PERMITIDO}" ` +
-        `(trava de homologacao do F5.5-FIX3). Recebido: "${args.eventId}". Abortando. Nenhuma mutacao realizada.`,
-    );
-    process.exitCode = 1;
   } else if (resultado.motivoFalha === 'EVENT_ID_NAO_ENCONTRADO') {
     console.error(`ERRO: eventId "${args.eventId}" nao encontrado na outbox. Abortando.`);
+    process.exitCode = 1;
+  } else if (resultado.motivoFalha === 'EVENT_TYPE_NAO_PERMITIDO') {
+    console.error(
+      `ERRO: eventType "${resultado.antes.eventType}" nao esta na allowlist de tipos liberados para automacao. ` +
+        'Abortando. Nenhuma mutacao realizada.',
+    );
     process.exitCode = 1;
   } else if (resultado.motivoFalha === 'STATUS_NAO_FAILED') {
     console.error(
@@ -166,4 +178,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { executarReabertura, EVENT_ID_PERMITIDO, CONFIRMACAO_ESPERADA };
+module.exports = { executarReabertura, EVENT_TYPES_LIBERADOS_PARA_ENVIO_AUTOMATICO, CONFIRMACAO_ESPERADA, AVISO_FORTE };
