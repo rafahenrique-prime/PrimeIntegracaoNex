@@ -88,6 +88,13 @@ function bufferVendasHistoricasFixture() {
   ]);
 }
 
+function bufferVenda_F4FIX2(numero, cliente) {
+  return construirXlsBuffer([
+    VENDAS_HEADER,
+    linhaDe(VENDAS_HEADER, { Número: numero, Tipo: 'Venda', Data: '1/2/26', Hora: '10:00', Cliente: cliente, 'Valor Pago': 'R$ 10.00 ' }),
+  ]);
+}
+
 function bufferExtratoFixture() {
   return construirXlsBuffer([
     EXTRATO_HEADER,
@@ -672,6 +679,176 @@ async function main() {
 
     estadoParcial.fechar(); outboxParcial.fechar(); checkpointParcial.fechar();
     fs.rmSync(dirParcial, { recursive: true, force: true });
+  }
+
+  // ---------- F4FIX2 A-J. Indice de Clientes NO CAMINHO OPERACIONAL (processarArquivoOperacional) nao regride ----------
+  console.log('\n=== F4FIX2 A-J. processarArquivoOperacional() nunca deixa um Clients antigo/parcial detectado depois rebaixar o indice ===');
+  {
+    const dirOp = novoDiretorioTemp();
+    const dbOp = path.join(dirOp, 'db.db');
+
+    const caminhoAtual = escrever(dirOp, 'clientes-A-atual.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'CANELINHA', Código: '316', Status: 'Ativo' }),
+    ]));
+    const caminhoAntigo = escrever(dirOp, 'clientes-B-antigo.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'CANELINHA', Código: '316', Status: 'Ativo' }),
+      linhaDe(CLIENTES_HEADER, { Nome: 'OUTRO ANTIGO', Código: '111', Status: 'Ativo' }),
+    ]));
+    const caminhoParcial = escrever(dirOp, 'clientes-C-parcial.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'MATHEUS HENRIQUE DEPRE', Código: '292', Status: 'Ativo' }),
+    ]));
+    const caminhoVendas = escrever(dirOp, 'vendas-teste.xls', bufferVenda_F4FIX2('90101', 'CANELINHA'));
+
+    const agora = Date.now();
+    fs.utimesSync(caminhoAntigo, new Date(agora - 300000), new Date(agora - 300000));
+    fs.utimesSync(caminhoParcial, new Date(agora - 200000), new Date(agora - 200000));
+    fs.utimesSync(caminhoAtual, new Date(agora - 100000), new Date(agora - 100000));
+
+    const estadoOp = new EstadoBootstrapSqlite(dbOp);
+    const outboxOp = new OutboxLocal(dbOp);
+    const checkpointOp = new CheckpointSqlite(dbOp);
+    const orqOp = new OrquestradorIntegracaoNex({ outbox: outboxOp, checkpoint: checkpointOp });
+    const bootOp = new BootstrapIntegracaoNex({ estado: estadoOp, orquestrador: orqOp, diretorioExports: dirOp });
+
+    const cutoffOp = '2026-01-01T00:00:00';
+    await bootOp.executarDryRun(cutoffOp);
+    await bootOp.confirmarBaseline(cutoffOp);
+    await bootOp.aprovar();
+
+    async function resolverCanelinhaAgora() {
+      const rel = await bootOp.processarArquivoOperacional(caminhoVendas);
+      const entrada = rel.readyToSend.find((r) => r.event.nexTransactionId === '90101') || rel.reviewRequired.find((r) => r.event && r.event.nexTransactionId === '90101');
+      return entrada ? entrada.event.nexCustomerCode : null;
+    }
+
+    // A. startup: clientes-A-atual (mais recente) selecionado corretamente ao processar um Clients qualquer.
+    const relA = await bootOp.processarArquivoOperacional(caminhoAtual);
+    todosPassaram &= check('A. processarArquivoOperacional(CLIENTES) gera relatorio zero-evento/zero-outbox/zero-HTTP', relA.enfileirados.length === 0 && relA.eventosGerados.length === 0 && relA.indiceAtualizado === true);
+    todosPassaram &= check('A. CANELINHA resolve 316 apos processar o Clients mais recente', (await resolverCanelinhaAgora()) === '316');
+
+    // B. Clients ANTIGO detectado depois -> indice NAO regride.
+    await bootOp.processarArquivoOperacional(caminhoAntigo);
+    todosPassaram &= check('B. Clients antigo detectado depois NAO rebaixa o indice (CANELINHA continua 316)', (await resolverCanelinhaAgora()) === '316');
+
+    // C. Clients PARCIAL e antigo detectado depois -> indice NAO regride.
+    await bootOp.processarArquivoOperacional(caminhoParcial);
+    todosPassaram &= check('C. Clients parcial/antigo detectado depois NAO rebaixa o indice (CANELINHA continua 316)', (await resolverCanelinhaAgora()) === '316');
+
+    // D. Surge um Clients REALMENTE mais novo (mesmo com poucas linhas) -> indice atualiza para ele.
+    const caminhoNovoReal = escrever(dirOp, 'clientes-D-novo-real.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'CLIENTE SOMENTE NO NOVO REAL', Código: '999', Status: 'Ativo' }),
+    ]));
+    fs.utimesSync(caminhoNovoReal, new Date(agora + 100000), new Date(agora + 100000)); // mais novo que TUDO
+    await bootOp.processarArquivoOperacional(caminhoNovoReal);
+    todosPassaram &= check('D. Clients REALMENTE mais novo (so 1 linha) atualiza o indice (CANELINHA deixa de existir)', (await resolverCanelinhaAgora()) === null);
+    const relVendasNovoReal = await bootOp.processarArquivoOperacional(caminhoVendas);
+    const entradaNovoReal = relVendasNovoReal.reviewRequired.find((r) => r.event && r.event.nexTransactionId === '90101');
+    todosPassaram &= check('D. nao inventou heuristica por linhas - o Clients de 1 linha venceu por ser realmente mais novo', entradaNovoReal != null);
+
+    // E. mesmo mtime -> desempate alfabetico ja homologado.
+    const caminhoE1 = escrever(dirOp, 'clientes-E1.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'SO NO E1', Código: '501', Status: 'Ativo' }),
+    ]));
+    const caminhoE2 = escrever(dirOp, 'clientes-E2.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'SO NO E2', Código: '502', Status: 'Ativo' }),
+    ]));
+    const mtimeEmpate = new Date(agora + 200000);
+    fs.utimesSync(caminhoE1, mtimeEmpate, mtimeEmpate);
+    fs.utimesSync(caminhoE2, mtimeEmpate, mtimeEmpate);
+    await bootOp.processarArquivoOperacional(caminhoE1);
+    // 'clientes-E1.xls' < 'clientes-E2.xls' alfabeticamente -> E1 deveria vencer o empate.
+    const { resolverCliente } = require('../SRC/customer-resolver-nex');
+    const resolucaoE1 = resolverCliente('SO NO E1', orqOp._indiceClientes);
+    todosPassaram &= check('E. empate de mtime resolvido por ordem alfabetica (clientes-E1.xls vence)', resolucaoE1.status === 'RESOLVED' && resolucaoE1.nexCustomerCode === '501');
+
+    // F. ordem de deteccao (chamadas em ordem diferente da cronologica) nao altera o resultado final -
+    // reprocessar um arquivo ANTIGO de novo, depois o mais recente de novo, resultado final e sempre
+    // o mesmo (o mais recente real), independente da ordem das chamadas.
+    await bootOp.processarArquivoOperacional(caminhoAntigo);
+    await bootOp.processarArquivoOperacional(caminhoAtual);
+    await bootOp.processarArquivoOperacional(caminhoParcial);
+    const resolucaoFinalF = resolverCliente('SO NO E1', orqOp._indiceClientes);
+    todosPassaram &= check('F. ordem de deteccao irrelevante - o resultado final sempre converge para o mais recente real (E1, ainda o mais novo de todos)', resolucaoFinalF.status === 'RESOLVED' && resolucaoFinalF.nexCustomerCode === '501');
+
+    estadoOp.fechar(); outboxOp.fechar(); checkpointOp.fechar();
+    fs.rmSync(dirOp, { recursive: true, force: true });
+  }
+
+  // ---------- F4FIX2 G. Reproducao OFFLINE exata da sequencia real do incidente (#15765) ----------
+  console.log('\n=== F4FIX2 G. Sequencia real do incidente reproduzida offline - CANELINHA deve resolver 316 ao final ===');
+  {
+    const dirInc = novoDiretorioTemp();
+    const dbInc = path.join(dirInc, 'db.db');
+
+    const cAtual = escrever(dirInc, 'clientes-dia-30-08.xls', bufferClientesFixture());
+    const cNex = escrever(dirInc, 'clientes-nex.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'CANELINHA', Código: '316', Status: 'Ativo' }),
+    ]));
+    const cCompleto = escrever(dirInc, 'Exportar-clientes-completo.xls', bufferClientesFixture());
+    const cParcial = escrever(dirInc, 'Exportar-clientes01.xls', construirXlsBuffer([
+      CLIENTES_HEADER,
+      linhaDe(CLIENTES_HEADER, { Nome: 'MATHEUS HENRIQUE DEPRE', Código: '292', Status: 'Ativo' }),
+      linhaDe(CLIENTES_HEADER, { Nome: 'LUANA MATEUS DEPRE', Código: '1258', Status: 'Ativo' }),
+    ]));
+    const vVendaIncidente = escrever(dirInc, 'Exportar-venda-30-08.xls', bufferVenda_F4FIX2('90102', 'CANELINHA'));
+
+    const agoraInc = Date.now();
+    fs.utimesSync(cAtual, new Date(agoraInc), new Date(agoraInc)); // mais recente de todos os Clients
+    fs.utimesSync(cNex, new Date(agoraInc - 500000), new Date(agoraInc - 500000));
+    fs.utimesSync(cCompleto, new Date(agoraInc - 400000), new Date(agoraInc - 400000));
+    fs.utimesSync(cParcial, new Date(agoraInc - 300000), new Date(agoraInc - 300000));
+
+    const estadoInc = new EstadoBootstrapSqlite(dbInc);
+    const outboxInc = new OutboxLocal(dbInc);
+    const checkpointInc = new CheckpointSqlite(dbInc);
+    const orqInc = new OrquestradorIntegracaoNex({ outbox: outboxInc, checkpoint: checkpointInc });
+    const bootInc = new BootstrapIntegracaoNex({ estado: estadoInc, orquestrador: orqInc, diretorioExports: dirInc });
+
+    const cutoffInc = '2026-01-01T00:00:00';
+    await bootInc.executarDryRun(cutoffInc);
+    await bootInc.confirmarBaseline(cutoffInc);
+    await bootInc.aprovar();
+
+    // Exatamente a mesma sequencia de deteccao observada no incidente real:
+    // atual -> nex(antigo) -> completo -> parcial(so 2 clientes, SEM CANELINHA) -> venda.
+    await bootInc.processarArquivoOperacional(cAtual);
+    await bootInc.processarArquivoOperacional(cNex);
+    await bootInc.processarArquivoOperacional(cCompleto);
+    await bootInc.processarArquivoOperacional(cParcial);
+    const relVendaInc = await bootInc.processarArquivoOperacional(vVendaIncidente);
+
+    const entradaInc = relVendaInc.readyToSend.find((r) => r.event.nexTransactionId === '90102');
+    todosPassaram &= check('G. #90102 (equivalente a #15765) -> READY_TO_SEND', entradaInc != null);
+    todosPassaram &= check('G. CANELINHA -> RESOLVED, nexCustomerCode = 316 (bug do F4 Teste 1 corrigido)', entradaInc && entradaInc.event.nexCustomerCode === '316' && entradaInc.event.customerResolutionStatus === 'RESOLVED');
+    todosPassaram &= check('G. enfileirado na outbox como READY_TO_SEND (nao REVIEW_REQUIRED)', relVendaInc.enfileirados.includes(entradaInc.event.eventId));
+
+    // H. Anti-replay permanece correto (mesmo com toda a sequencia de Clients intercalada).
+    const itemBaseline = await outboxInc.buscarPorEventId('SALE_PAID:NEX:15751'); // nao existe nesta fixture - so garante zero-write acidental
+    todosPassaram &= check('H. nenhum evento de fixture historica indevida foi criado (outbox so tem o evento novo)', itemBaseline === null);
+    const pendentesInc = await outboxInc.listarPorStatus(ESTADOS.PENDING);
+    todosPassaram &= check('H. outbox contem exatamente 1 item (so o evento novo #90102)', pendentesInc.length === 1 && pendentesInc[0].eventId === entradaInc.event.eventId);
+
+    // I. Zero efeito em gate/allowlist/contentHash/outbox/retry/checkpoint - o evento enfileirado
+    // tem exatamente os mesmos campos/contrato de sempre (eventId/eventType/contentHash presentes,
+    // sourceStatus correto, sem nenhum campo novo inventado).
+    const itemOutboxInc = await outboxInc.buscarPorEventId(entradaInc.event.eventId);
+    todosPassaram &= check('I. outbox preserva sourceStatus=READY_TO_SEND, contentHash presente, mesmo eventType SALE_PAID', itemOutboxInc.sourceStatus === 'READY_TO_SEND' && !!itemOutboxInc.contentHash && itemOutboxInc.eventType === 'SALE_PAID');
+
+    // J. dry-run/baseline continuam usando exatamente a mesma regra (_varrerEClassificar,
+    // inalterado por esta correcao - metodo interno, so leitura, nao re-transiciona estado).
+    const resultadoInterno = await bootInc._varrerEClassificar(cutoffInc);
+    todosPassaram &= check('J. _varrerEClassificar (dry-run/baseline, mecanismo inalterado) classifica #90102 como NOVO (pos-cutoff), igual ao caminho operacional', resultadoInterno.novos.length === 1 && resultadoInterno.novos[0].event.nexTransactionId === '90102');
+    todosPassaram &= check('J. estado do bootstrap permanece APPROVED (metodo de leitura nao alterou a maquina de estados)', (await estadoInc.obterEstado()).status === 'APPROVED');
+
+    estadoInc.fechar(); outboxInc.fechar(); checkpointInc.fechar();
+    fs.rmSync(dirInc, { recursive: true, force: true });
   }
 
   // ---------- AP/AQ/AR/AS. Garantias estruturais ----------

@@ -458,17 +458,52 @@ class BootstrapIntegracaoNex {
       throw new BootstrapNaoAprovadoError(estadoAtual.status);
     }
 
+    // CORRECAO (F4-FIX2, bug real achado no F4 Teste 1 #15765): um arquivo
+    // CLIENTES detectado durante uma sessao operacional longa NUNCA pode
+    // ser delegado a OrquestradorIntegracaoNex.processarArquivo() aqui -
+    // isso acionaria _processarClientes(), que SUBSTITUI incondicionalmente
+    // this._indiceClientes pelo conteudo daquele arquivo especifico,
+    // mesmo que ele seja mais antigo ou parcial. Em vez disso, reexecuta
+    // EXATAMENTE inicializarIndiceClientes() (mesma regra ja homologada -
+    // latest Clients por mtime, desempate alfabetico - reavaliada sobre
+    // TODOS os candidatos reais da pasta, nao so o arquivo que disparou o
+    // evento), garantindo que um Clients antigo/parcial detectado DEPOIS
+    // nunca rebaixe o indice. Zero evento financeiro, zero outbox, zero
+    // HTTP para este arquivo - simetrico a correcao ja aplicada em
+    // _varrerEClassificar (commit 8dd897c), agora tambem no caminho
+    // operacional pos-APPROVED.
+    const bufferAmostra = this._fs.readFileSync(caminho);
+    const tipoDetectado = identificarTipoExport(bufferAmostra);
+
+    if (tipoDetectado === TIPOS_EXPORT.CLIENTES) {
+      await this.inicializarIndiceClientes();
+      return {
+        arquivo: caminho,
+        tipoExport: TIPOS_EXPORT.CLIENTES,
+        totalLinhas: 0,
+        eventosGerados: [],
+        readyToSend: [],
+        reviewRequired: [],
+        bloqueadosParaAutomacao: [],
+        enfileirados: [],
+        ignoradosCheckpoint: [],
+        ignoradosAntiReplay: [],
+        historicoAlterado: [],
+        conflitos: [],
+        erros: [],
+        indiceAtualizado: true,
+        erroArquivo: null,
+      };
+    }
+
     // Pendencia F3.4 (item 22): antes de processar um arquivo de VENDAS em
     // operacao normal, garante que o indice de clientes ja foi carregado
     // deterministicamente nesta sessao - nunca processa Vendas com indice
-    // vazio silenciosamente. Clientes/Extrato individual nao dependem do
-    // indice global (extrato usa contextoClienteExtrato explicito), entao
-    // nao exigem essa garantia.
-    if (!this._indiceClientesInicializado) {
-      const buffer = this._fs.readFileSync(caminho);
-      if (identificarTipoExport(buffer) === TIPOS_EXPORT.VENDAS) {
-        await this.inicializarIndiceClientes(); // lanca IndiceClientesIndisponivelError se nao houver Clientes (falha fechada)
-      }
+    // vazio silenciosamente. Extrato individual nao depende do indice
+    // global (usa contextoClienteExtrato explicito), entao nao exige essa
+    // garantia.
+    if (!this._indiceClientesInicializado && tipoDetectado === TIPOS_EXPORT.VENDAS) {
+      await this.inicializarIndiceClientes(); // lanca IndiceClientesIndisponivelError se nao houver Clientes (falha fechada)
     }
 
     // O filtro do orquestrador precisa ser SINCRONO (`(evento) => boolean`)
