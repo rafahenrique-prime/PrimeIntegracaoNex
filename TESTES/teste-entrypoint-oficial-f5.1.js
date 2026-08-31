@@ -67,52 +67,88 @@ check(
 }
 
 // --- B/C/D/E/F. Banco oficial contem exatamente o estado migrado ---
+//
+// IMPORTANTE: estes checks comparam a COPIA de teste contra o proprio
+// banco real (fonte), NUNCA contra numeros absolutos capturados no dia
+// em que este teste foi escrito. O banco operacional real evolui
+// legitimamente com o uso em producao (novos eventos, novos estados) -
+// hardcoded uma contagem fixa (ex. "outbox tem exatamente 6 linhas")
+// tornaria este teste obsoleto a cada novo evento real processado, sem
+// nenhuma relacao com a garantia que a F5.1 realmente precisa provar:
+// "copiar/renomear o arquivo .db preserva TUDO que estava la, seja
+// qual for o conteudo real no momento". Comparar copia-vs-fonte no
+// mesmo instante e uma invariante estavel no tempo.
 {
+  // ATENCAO A CONCORRENCIA: o banco real pode estar sendo escrito AGORA
+  // pelo servico de producao (RUNNING). Por isso, capturamos TODA a
+  // "fonte" (hash + queries) num unico bloco, o mais rapido possivel,
+  // e SO DEPOIS copiamos o arquivo - minimizando a janela entre "o que
+  // lemos como fonte" e "o que foi efetivamente copiado". Ler a fonte
+  // DEPOIS de copiar (ordem antiga) e o erro a evitar: se o servico
+  // escrever nesse meio-tempo, fonte-pos-copia e copia deixam de
+  // corresponder ao MESMO instante, gerando falso-negativo sem
+  // nenhum defeito real de codigo.
+  const dbFonte = new DatabaseSync(DB_REAL_PATH, { readOnly: true });
+  const hashRealAntesDaCopia = sha256Arquivo(DB_REAL_PATH);
+  const bootstrapFonte = dbFonte.prepare('SELECT status, cutoff, baseline_files_count, baseline_events_count FROM bootstrap_state').get();
+  const baselineArquivosFonte = dbFonte.prepare('SELECT COUNT(*) n FROM baseline_arquivos').get();
+  const baselineEventosFonte = dbFonte.prepare('SELECT COUNT(*) n FROM baseline_eventos').get();
+  const outboxFonte = dbFonte.prepare('SELECT status, COUNT(*) n FROM outbox GROUP BY status ORDER BY status').all()
+    .map((r) => ({ status: r.status, n: r.n }));
+  const checkpointsFonte = dbFonte.prepare('SELECT COUNT(*) n FROM eventos_processados').get();
+  const todasLinhasFonte = dbFonte.prepare(
+    'SELECT event_id, status, tentativas, result, http_status, correlation_id, content_hash FROM outbox ORDER BY event_id',
+  ).all();
+  dbFonte.close();
+
   const dirTemp = novoDiretorioTemp();
   const dbTeste = path.join(dirTemp, 'integracao-nex-copia-teste.db');
   fs.copyFileSync(DB_REAL_PATH, dbTeste);
-
-  const hashReal = sha256Arquivo(DB_REAL_PATH);
+  // Copiar TAMBEM os companheiros -wal/-shm (modo WAL): com o servico
+  // RUNNING, transacoes recentes podem estar confirmadas apenas no WAL,
+  // ainda nao mescladas ao arquivo .db principal. Copiar so o arquivo
+  // principal produziria uma copia LOGICAMENTE desatualizada mesmo
+  // sendo byte-a-byte identica a si mesma - exatamente o procedimento
+  // real de migracao da F5.1 (que copiou os 3 arquivos, com o runner
+  // parado). Aqui o runner pode estar rodando, entao replicar os 3
+  // arquivos e obrigatorio para a copia refletir o mesmo estado logico
+  // que uma query direta na fonte enxerga.
+  for (const sufixo of ['-wal', '-shm']) {
+    if (fs.existsSync(DB_REAL_PATH + sufixo)) {
+      fs.copyFileSync(DB_REAL_PATH + sufixo, dbTeste + sufixo);
+    }
+  }
   const hashCopia = sha256Arquivo(dbTeste);
-  check('B. copia de teste do banco oficial e byte-identica ao arquivo real', hashCopia, hashReal);
 
-  const db = new DatabaseSync(dbTeste, { readOnly: true });
+  check('B. copia de teste do banco oficial e byte-identica ao arquivo real (arquivo principal, lido imediatamente antes da copia)', hashCopia, hashRealAntesDaCopia);
 
-  const bootstrap = db.prepare('SELECT status, cutoff, baseline_files_count, baseline_events_count FROM bootstrap_state').get();
-  check('C. bootstrap continua APPROVED', bootstrap.status, 'APPROVED');
-  check('D. cutoff continua identico', bootstrap.cutoff, '2026-08-30T19:36:46.184');
-  check('E. baseline_files_count continua 6', bootstrap.baseline_files_count, 6);
-  check('E. baseline_events_count continua 4709', bootstrap.baseline_events_count, 4709);
+  const dbCopia = new DatabaseSync(dbTeste, { readOnly: true });
 
-  const baselineArquivos = db.prepare('SELECT COUNT(*) n FROM baseline_arquivos').get();
-  const baselineEventos = db.prepare('SELECT COUNT(*) n FROM baseline_eventos').get();
-  check('E. baseline_arquivos (tabela) continua com 6 linhas', baselineArquivos.n, 6);
-  check('E. baseline_eventos (tabela) continua com 4709 linhas', baselineEventos.n, 4709);
+  const bootstrapCopia = dbCopia.prepare('SELECT status, cutoff, baseline_files_count, baseline_events_count FROM bootstrap_state').get();
+  check('C. bootstrap da copia identico ao da fonte (status/cutoff/baseline)', bootstrapCopia, bootstrapFonte);
+  check('D. cutoff da copia identico ao da fonte', bootstrapCopia.cutoff, bootstrapFonte.cutoff);
 
-  const outboxPorStatus = db.prepare('SELECT status, COUNT(*) n FROM outbox GROUP BY status ORDER BY status').all()
+  const baselineArquivosCopia = dbCopia.prepare('SELECT COUNT(*) n FROM baseline_arquivos').get();
+  const baselineEventosCopia = dbCopia.prepare('SELECT COUNT(*) n FROM baseline_eventos').get();
+  check('E. baseline_arquivos (tabela) da copia identica a fonte', baselineArquivosCopia, baselineArquivosFonte);
+  check('E. baseline_eventos (tabela) da copia identica a fonte', baselineEventosCopia, baselineEventosFonte);
+
+  const outboxCopia = dbCopia.prepare('SELECT status, COUNT(*) n FROM outbox GROUP BY status ORDER BY status').all()
     .map((r) => ({ status: r.status, n: r.n }));
-  check('F. outbox preservada (SENT:2, REVIEW_STORED:4)', outboxPorStatus, [
-    { status: 'REVIEW_STORED', n: 4 },
-    { status: 'SENT', n: 2 },
-  ]);
+  check('F. outbox da copia identica a fonte (qualquer que seja o estado real atual)', outboxCopia, outboxFonte);
 
-  const checkpoints = db.prepare('SELECT COUNT(*) n FROM eventos_processados').get();
-  check('F. checkpoints preservados (6 eventos)', checkpoints.n, 6);
+  const checkpointsCopia = dbCopia.prepare('SELECT COUNT(*) n FROM eventos_processados').get();
+  check('F. contagem de checkpoints da copia identica a fonte', checkpointsCopia, checkpointsFonte);
 
-  const evento15767 = db.prepare(
-    "SELECT event_id, status, tentativas, result, http_status, correlation_id, content_hash FROM outbox WHERE event_id = 'SALE_PAID:NEX:15767'",
-  ).get();
-  check('F. #15767 preservado exatamente (SENT/CREATED/tentativas:5/correlationId real)', evento15767, {
-    event_id: 'SALE_PAID:NEX:15767',
-    status: 'SENT',
-    tentativas: 5,
-    result: 'CREATED',
-    http_status: 200,
-    correlation_id: 'dcf8ebf3-09c6-4c92-9da2-c6b34dc5c507',
-    content_hash: '7cd7af12528229b37d66ffc6ebaef4c2018e3ef4281641ca19d2cd406c312bc9',
-  });
+  // Nenhuma linha da outbox pode ser perdida/alterada pela copia - compara
+  // TODAS as linhas (nao so uma amostra fixa como #15767), ordenadas por
+  // event_id para comparacao deterministica.
+  const todasLinhasCopia = dbCopia.prepare(
+    'SELECT event_id, status, tentativas, result, http_status, correlation_id, content_hash FROM outbox ORDER BY event_id',
+  ).all();
+  check('F. TODAS as linhas da outbox preservadas byte-a-byte (fonte vs copia)', todasLinhasCopia, todasLinhasFonte);
 
-  db.close();
+  dbCopia.close();
   fs.rmSync(dirTemp, { recursive: true, force: true });
 }
 

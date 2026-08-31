@@ -59,7 +59,12 @@ const TRANSICOES_PERMITIDAS = Object.freeze({
   [ESTADOS.SENT]: [],
   [ESTADOS.REVIEW_STORED]: [],
   [ESTADOS.REJECTED]: [],
-  [ESTADOS.FAILED]: [],
+  // FAILED -> PENDING (F5.5-FIX2): unica saida permitida a partir de um
+  // estado terminal, e exclusivamente via reabrirFailed() - uma
+  // intervencao humana explicita apos a causa raiz externa (ex.: secret
+  // incorreto) ter sido corrigida. Nunca automatica (detector/runner/
+  // processador jamais chamam isso sozinhos).
+  [ESTADOS.FAILED]: [ESTADOS.PENDING],
 });
 
 /**
@@ -440,6 +445,41 @@ class OutboxLocal {
       recuperados.push(item);
     }
     return recuperados;
+  }
+
+  /**
+   * Reabre manualmente um item terminal FAILED, devolvendo-o a PENDING
+   * para ser reclamado pelo processador normalmente (F5.5-FIX2). Uso
+   * EXCLUSIVAMENTE humano/deliberado - nunca chamado pelo detector,
+   * runner ou processador automaticamente. Preserva eventId/contentHash/
+   * payload/tentativas (nunca reseta), compoe ultimoErro (nunca apaga a
+   * evidencia da falha original).
+   *
+   * @param {string} eventId
+   * @param {{motivo:string, operador?:string}} contexto - motivo
+   *   obrigatorio (nao vazio); operador opcional, para auditoria.
+   * @returns {Promise<Object>}
+   * @throws {Error} se motivo for vazio/ausente, ou se o eventId nao existir.
+   * @throws {TransicaoInvalidaError} se o item NAO estiver em FAILED
+   *   (SENT/REVIEW_STORED/REJECTED continuam sem nenhuma saida permitida).
+   */
+  async reabrirFailed(eventId, contexto) {
+    if (!contexto || !contexto.motivo || !String(contexto.motivo).trim()) {
+      throw new Error('OutboxLocal.reabrirFailed: motivo obrigatorio (nao vazio).');
+    }
+    const existente = await this.buscarPorEventId(eventId);
+    if (!existente) {
+      throw new Error(`OutboxLocal.reabrirFailed: eventId "${eventId}" nao encontrado na outbox.`);
+    }
+
+    // A validacao de estado permitido continua centralizada na matriz
+    // TRANSICOES_PERMITIDAS (via transicionar()) - nao duplicada aqui.
+    const ultimoErroComposto =
+      `Reaberto manualmente em ${agoraIso()} ` +
+      `(motivo: ${contexto.motivo}${contexto.operador ? `, operador: ${contexto.operador}` : ''}). ` +
+      `Erro anterior: ${existente.ultimoErro != null ? JSON.stringify(existente.ultimoErro) : '(nenhum registrado)'}`;
+
+    return this.transicionar(eventId, ESTADOS.PENDING, { ultimoErro: ultimoErroComposto });
   }
 
   /** @param {string} nexTransactionId @returns {Promise<Array<Object>>} */
