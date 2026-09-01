@@ -1,3 +1,4 @@
+using System.IO;
 using PrimeNexExportAgent.Contracts;
 using PrimeNexExportAgent.Logging;
 
