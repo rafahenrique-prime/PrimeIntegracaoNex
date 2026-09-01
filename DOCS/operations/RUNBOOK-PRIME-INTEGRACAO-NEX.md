@@ -444,7 +444,8 @@ Nenhuma credencial é ou deve ser versionada — `.env`, `OUTPUT/*.db` e `LOGS/`
 - Automação da geração do export oficial do NEX (seção 18) — ainda manual.
 - Monitoramento/heartbeat externo do serviço — não implementado.
 - Conta de serviço dedicada (hoje `LocalSystem`) — hardening futuro, não bloqueante.
-- Remediação histórica de `#15762`/`#15763`/`#15765` (eventos antigos afetados por um defeito de índice de clientes já corrigido) — decisão administrativa ainda pendente, separada do incidente de autenticação já encerrado.
+
+**Remediação histórica `#15762`/`#15763`/`#15765` — avaliada e encerrada (F5.8/F5.8.1).** Os três são artefatos históricos conhecidos do bug de índice de clientes já corrigido (F4-FIX2), sem efeito financeiro ativo no backend atual (confirmado que `webhookNex` hoje só persiste `EventoNex`/`LogIntegracao`, sem consumer financeiro). Decisão: **não remediar**. `#15764` permanece `REVIEW_REQUIRED` legítimo (venda sem cliente preenchido na origem, controle do incidente).
 
 ---
 
@@ -459,3 +460,4 @@ Nenhuma credencial é ou deve ser versionada — `.env`, `OUTPUT/*.db` e `LOGS/`
 - Recuperação manual de `FAILED`: mecanismo dedicado e auditável, homologado com 3 eventos reais (`#15768`, `#15769`, `#15770`), todos alcançando o estado terminal correto.
 - `FAILED` global reduzido a zero após a recuperação, com regressão completa (50/50 suítes) mantida em todos os checkpoints.
 - Política de consistência outbox↔checkpoint (F5.7): 68/68 asserções do reconciliador PASS, regressão completa 51/51 suítes PASS; snapshot real do banco de produção criado com `node:sqlite backup()` (origem aberta somente-leitura, serviço nunca parado), `PRAGMA integrity_check = ok`; cenários reparáveis e bloqueados homologados isoladamente na cópia (nunca em produção); dry-run direto contra o banco oficial confirmou 0 divergências, com evidência de escrita zero (hash do arquivo, contagens e `updated_at` idênticos antes/depois); nenhuma chamada HTTP em nenhuma etapa.
+- Remediação histórica `#15762`/`#15763`/`#15765`/`#15764` (F5.8/F5.8.1): os três primeiros confirmados como vítimas reais do bug histórico de índice de clientes — o resolver atual, com o export de clientes correto, classifica os três como `READY_TO_SEND`; `#15764` confirmado como `REVIEW_REQUIRED` legítimo (cliente vazio na venda de origem, nunca afetado pelo bug). Confirmado por leitura direta do código real do backend Base44: mesmo `eventId`/`contentHash` → `UNCHANGED` → nenhuma alteração do registro existente; e que `webhookNex` hoje é somente inbox/persistência (`EventoNex`/`LogIntegracao`), sem consumer financeiro. Decisão administrativa: não remediar os registros históricos.
