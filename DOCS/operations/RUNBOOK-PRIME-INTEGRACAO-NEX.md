@@ -159,6 +159,51 @@ node SCRIPTS\reabrir-evento-failed.js --eventId "<EVENT_ID>" --motivo "<MOTIVO>"
 
 ---
 
+## 9.1 Reconciliação administrativa outbox ↔ checkpoint
+
+CLI oficial: [`SCRIPTS/reconciliar-consistencia.js`](../../SCRIPTS/reconciliar-consistencia.js) — implementa o **REPARO LOCAL ADMINISTRATIVO** definido pela política da seção 17. Este CLI é uma ferramenta **separada e distinta** do CLI de recuperação de `FAILED` (seção 9) — nunca misturar as duas responsabilidades: um reabre eventos travados para reenvio; o outro só completa registros de checkpoint que já foram confirmados na outbox, **sem nunca reenviar nada**.
+
+**Não é auto-repair silencioso.** O startup do serviço só **audita** (via `auditarConsistencia()`, seção 17) e nunca corrige nada sozinho. Qualquer reparo exige uma execução administrativa explícita deste CLI, com confirmação humana.
+
+Comportamento:
+
+```
+DRY-RUN (padrão, sem argumentos)
+  → varre outbox + checkpoint
+  → classifica cada divergência encontrada
+  → reporta, NÃO grava nada
+
+--aplicar (explícito)
+  → mostra novamente o relatório
+  → exibe aviso forte + quantidade de itens reparáveis
+  → exige confirmação exata: digitar "RECONCILIAR"
+  → só então grava (SOMENTE no checkpoint, NUNCA na outbox, NUNCA via HTTP)
+```
+
+Classificações possíveis:
+- `REPARAVEL_AUSENTE` / `REPARAVEL_INCOMPLETO` — reparáveis (seção 17).
+- `CHECKPOINT_NUNCA_REGISTRADO` (`REJECTED`/`FAILED`) — somente auditoria, nunca reparado por este CLI.
+- `NAO_REPARAVEL_CONTRADITORIO` — checkpoint com evidência conflitante, nunca sobrescrito.
+- `CRITICO_CHECKPOINT_SEM_OUTBOX` — cenário crítico, exige investigação humana, nunca reconstrói a outbox.
+
+Exemplo conceitual (dry-run, sem nenhum evento fixo):
+
+```bash
+node SCRIPTS\reconciliar-consistencia.js
+```
+
+Exemplo conceitual de aplicação (só depois de revisar o dry-run e decidir administrativamente):
+
+```bash
+node SCRIPTS\reconciliar-consistencia.js --aplicar
+```
+
+(o CLI então pede a confirmação exata `RECONCILIAR` antes de gravar qualquer coisa)
+
+Garantias estruturais: **zero chamada HTTP** (o arquivo não importa o Repository HTTP, não usa `fetch`, não referencia transporte); **outbox nunca é modificada** por este CLI (só leitura); reparo restrito a `SENT`/`REVIEW_STORED` com resultado remoto confirmado.
+
+---
+
 ## 10. REVIEW_REQUIRED
 
 Um evento com `sourceStatus:REVIEW_REQUIRED` **não deve ser promovido localmente** para outro status — a decisão de resolver o cliente cabe ao backend/operação manual, nunca a uma heurística automática deste código.
@@ -259,9 +304,20 @@ O runner **se recusa a iniciar** se `status !== APPROVED` — não tenta avança
 - Escalar: a resolução do cliente (matching manual) é uma decisão administrativa no Base44, fora deste código.
 
 ### I. Divergência outbox↔checkpoint
-- Verificar: rodar `auditarConsistencia()` (função já existente em `SERVICO/bootstrap-integracao-nex.js`) — reporta divergências em nível `WARN` no startup, sem bloquear o serviço.
-- Não fazer: editar SQLite manualmente para "corrigir" a divergência.
-- Escalar: ver seção 17 — hoje não existe auto-repair; é uma decisão pendente de política.
+- Verificar: `auditarConsistencia()` (`SERVICO/bootstrap-integracao-nex.js`) já reporta divergências em nível `WARN` no startup, sem bloquear o serviço — mas o diagnóstico completo e a eventual correção são feitos pelo CLI dedicado (seção 9.1/17), não só pelo log.
+- **Passo 1 — dry-run administrativo** (sempre primeiro, nunca `--aplicar` de imediato):
+  ```bash
+  node SCRIPTS\reconciliar-consistencia.js
+  ```
+  Dry-run é o comportamento **padrão** — não grava nada. Revisar a classificação de cada divergência reportada: `REPARAVEL_AUSENTE`/`REPARAVEL_INCOMPLETO` (reparável), `CHECKPOINT_NUNCA_REGISTRADO` (somente auditoria — `REJECTED`/`FAILED`, nunca reparado), `NAO_REPARAVEL_CONTRADITORIO` (bloqueado, exige investigação), `CRITICO_CHECKPOINT_SEM_OUTBOX` (crítico, exige investigação).
+- **Passo 2 — só se houver itens reparáveis**: analisar o BEFORE de cada um (mostrado pelo próprio CLI, sem payload). Só depois de uma decisão administrativa explícita, rodar:
+  ```bash
+  node SCRIPTS\reconciliar-consistencia.js --aplicar
+  ```
+  e confirmar digitando exatamente `RECONCILIAR` quando solicitado.
+- **Nenhuma reconciliação gera HTTP** — o reparo é sempre local (outbox → checkpoint), nunca reenvia nada ao Base44.
+- Não fazer: editar SQLite manualmente para "corrigir" a divergência; nunca usar `--aplicar` sem antes revisar o dry-run.
+- Escalar: qualquer item `NAO_REPARAVEL_CONTRADITORIO` ou `CRITICO_CHECKPOINT_SEM_OUTBOX` sempre exige investigação humana — nunca são corrigidos automaticamente por este CLI (ver seção 17).
 
 ### J. Restart inesperado
 - Verificar: Event Log do Windows (`Get-WinEvent`) para distinguir reboot manual de reboot forçado por atualização; logs do serviço para confirmar `itensRecuperados` no novo `runId`.
@@ -297,13 +353,37 @@ CLAUDE BEFORE → ação controlada → aguardar processamento → CLAUDE AFTER
 
 ---
 
-## 17. Consistência outbox ↔ checkpoint
+## 17. Consistência outbox ↔ checkpoint — política definitiva (F5.7)
 
-Honestamente, hoje:
-- Outbox e checkpoint são **conexões SQLite separadas** sobre o mesmo arquivo `.db`.
-- `auditarConsistencia()` (em `SERVICO/bootstrap-integracao-nex.js`) **detecta** divergências (ex.: item `SENT` sem checkpoint correspondente) e loga em `WARN` no startup.
-- **Não existe auto-repair.** A decisão de investigar/corrigir uma divergência é sempre manual, revisando os logs.
-- Uma política definitiva de reconciliação de longo prazo **ainda está pendente** — não fingir que está resolvida.
+**Papel de cada módulo**:
+- **Outbox** (`SERVICO/outbox-local.js`) é o **source of truth operacional do transporte** — fila de trabalho, controla retry/backoff, e é quem efetivamente impede reenvio duplicado (`enqueue()` bloqueia um `eventId` já existente, em qualquer status, pelo mesmo `contentHash`).
+- **Checkpoint** (`SERVICO/checkpoint-sqlite.js`) é um **registro derivado**, escrito **depois** da outbox, para consulta/idempotência local e completude de auditoria — nunca é a fonte primária de decisão sobre reenviar ou não.
+- Os dois atuam como **proteções complementares**, não uma dependência hierárquica única: se o checkpoint tem o registro confirmado (mesmo sem outbox), ele sozinho impede reenvio; se a outbox tem o `eventId` (mesmo sem checkpoint), ela sozinha impede reenvio.
+
+**Ordem real de escrita**: sempre **outbox primeiro, checkpoint depois** (mesma chamada de `processarProximo()` em `SERVICO/processador-outbox-nex.js`), em **duas conexões SQLite distintas** sobre o mesmo arquivo `.db` — não existe transação cross-connection.
+
+**Janela de crash real**: um crash entre essas duas escritas pode deixar o checkpoint **ausente** ou **incompleto** (linha criada, mas ainda sem `result`). Essa é a divergência normal alcançável — `outbox terminal (SENT/REVIEW_STORED) confirmado remotamente` + `checkpoint ausente/incompleto`. **Isso nunca gera replay automático**: a própria outbox já impede um novo `enqueue()` do mesmo `eventId`, independentemente do estado do checkpoint. O efeito real de uma divergência não corrigida é só um **gap de auditoria local**, nunca um risco financeiro ou de duplicação.
+
+### Casos reparáveis (REPARO LOCAL ADMINISTRATIVO)
+
+Permitido **somente** quando:
+- `outbox.status` ∈ `{SENT, REVIEW_STORED}`, **e**
+- `outbox.result` ∈ `{CREATED, UNCHANGED, UPDATED, REVIEW_STORED}` (resultado remoto já confirmado), **e**
+- o checkpoint está **ausente**, **ou** está **incompleto de forma compatível com a janela de crash** (mesmo `eventId`/`contentHash`, `result` ainda `null`, nenhum outro campo preenchido de forma contraditória).
+
+O reparo é sempre **outbox → checkpoint**, nunca o inverso — a outbox nunca é modificada por essa reconciliação, e nenhuma chamada HTTP é feita (o dado já confirmado só é copiado localmente). Ferramenta: `SCRIPTS/reconciliar-consistencia.js` (seção 9.1).
+
+### Casos NÃO reparáveis automaticamente
+
+- **`REJECTED`/`FAILED`**: o CLI de reconciliação só **audita** (`CHECKPOINT_NUNCA_REGISTRADO`), nunca corrige — esses resultados nunca representam uma confirmação remota de sucesso. `FAILED` continua tendo seu próprio mecanismo de recuperação, exclusivamente via `SCRIPTS/reabrir-evento-failed.js` (seção 9) — os dois CLIs nunca se sobrepõem.
+- **Checkpoint contraditório** (result presente e incompatível, `contentHash` divergente, campos parciais inesperados, ou qualquer outra evidência conflitante): **nunca sobrescrito** — classificado `NAO_REPARAVEL_CONTRADITORIO`, exige investigação humana.
+- **Checkpoint terminal confirmado sem outbox correspondente**: classificado `CRITICO_CHECKPOINT_SEM_OUTBOX`. Este cenário **nunca** aciona reconstrução da outbox — o checkpoint não carrega `payload`/`eventType`/`sourceStatus` suficientes para recriar uma linha de outbox válida (o schema exige `payload_json NOT NULL`), então nada é inventado. Sempre investigação humana, nunca HTTP, nunca criação automática de linha.
+
+### O que isto NÃO é
+
+- **Não é auto-repair silencioso no boot** — o startup só audita (`auditarConsistencia()`), nunca corrige.
+- **Não existe transação atômica** entre outbox e checkpoint (avaliado e descartado por custo/risco desproporcional ao ganho, já que o risco residual é só de auditoria, nunca financeiro).
+- **Não há nenhuma chamada HTTP** envolvida em nenhuma reconciliação, sob nenhuma circunstância.
 
 ---
 
@@ -361,7 +441,6 @@ Nenhuma credencial é ou deve ser versionada — `.env`, `OUTPUT/*.db` e `LOGS/`
 
 ## 23. Pendências conhecidas
 
-- Política definitiva de reconciliação outbox ↔ checkpoint (seção 17).
 - Automação da geração do export oficial do NEX (seção 18) — ainda manual.
 - Monitoramento/heartbeat externo do serviço — não implementado.
 - Conta de serviço dedicada (hoje `LocalSystem`) — hardening futuro, não bloqueante.
@@ -379,3 +458,4 @@ Nenhuma credencial é ou deve ser versionada — `.env`, `OUTPUT/*.db` e `LOGS/`
 - Secret rotacionado coordenadamente (Base44 + NSSM), validado com evento real.
 - Recuperação manual de `FAILED`: mecanismo dedicado e auditável, homologado com 3 eventos reais (`#15768`, `#15769`, `#15770`), todos alcançando o estado terminal correto.
 - `FAILED` global reduzido a zero após a recuperação, com regressão completa (50/50 suítes) mantida em todos os checkpoints.
+- Política de consistência outbox↔checkpoint (F5.7): 68/68 asserções do reconciliador PASS, regressão completa 51/51 suítes PASS; snapshot real do banco de produção criado com `node:sqlite backup()` (origem aberta somente-leitura, serviço nunca parado), `PRAGMA integrity_check = ok`; cenários reparáveis e bloqueados homologados isoladamente na cópia (nunca em produção); dry-run direto contra o banco oficial confirmou 0 divergências, com evidência de escrita zero (hash do arquivo, contagens e `updated_at` idênticos antes/depois); nenhuma chamada HTTP em nenhuma etapa.
