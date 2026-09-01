@@ -576,30 +576,92 @@ class BootstrapIntegracaoNex {
   }
 
   /**
-   * Auditoria de consistencia entre outbox terminal (SENT/REVIEW_STORED)
-   * e o checkpoint - pendencia registrada desde a Fase F3.5 (ausencia de
-   * transacao cross-connection real). NAO inventa confirmacao: apenas
-   * relata `CHECKPOINT_AUSENTE` para itens terminais sem contrapartida
-   * confirmada no checkpoint. Somente leitura - nao corrige nada.
+   * Auditoria de consistencia entre outbox e checkpoint - pendencia
+   * registrada desde a Fase F3.5 (ausencia de transacao cross-connection
+   * real) e ampliada na Fase F5.7/F5.7.1 (auditoria profunda + reconciliacao
+   * local administrativa, SCRIPTS/reconciliar-consistencia.js). NAO inventa
+   * confirmacao, NAO repara nada aqui - esta funcao continua SOMENTE
+   * LEITURA; qualquer reparo fica exclusivamente no CLI dedicado.
+   *
+   * Duas categorias de verificacao:
+   *
+   * 1) SENT/REVIEW_STORED (outbox terminal CONFIRMADO remotamente): precisa
+   *    ter um checkpoint correspondente e coerente. Motivos possiveis:
+   *      - CHECKPOINT_AUSENTE: nenhum registro de checkpoint para o eventId
+   *        (comportamento/rotulo ja existente desde F3.7, preservado).
+   *      - CHECKPOINT_INCOMPLETO: checkpoint existe, mesmo contentHash, mas
+   *        `result` ainda null (janela de crash entre
+   *        checkpoint.registrarEvento() e checkpoint.atualizarEvento() -
+   *        F5.7 secao 1.E.2) - candidato a reparo (F5.7.1).
+   *      - CHECKPOINT_CONTRADITORIO: checkpoint existe mas com contentHash
+   *        diferente, ou com um `result` presente que nao bate com o da
+   *        outbox - NUNCA reparavel automaticamente, exige investigacao
+   *        humana (F5.7 secao 5).
+   *
+   * 2) REJECTED/FAILED (outbox terminal SEM confirmacao remota possivel):
+   *    a auditoria aqui e SOMENTE INFORMATIVA (`CHECKPOINT_NUNCA_REGISTRADO`,
+   *    `apenasAuditoria:true`) - a auxiliar de idempotencia local
+   *    (`eventoJaConfirmado`) nunca se aplica a esses resultados (nunca
+   *    estao em RESULTADOS_CONFIRMADOS), entao a auditoria aqui nunca
+   *    classifica isso como algo "a confirmar" ou "a reparar". FAILED
+   *    continua tratado exclusivamente por SCRIPTS/reabrir-evento-failed.js
+   *    (responsabilidade separada, nunca misturada aqui).
+   *
+   * O cenario "checkpoint terminal confirmado sem outbox correspondente"
+   * (F5.7 secao 2/9) NAO e verificado por esta funcao - exigiria uma
+   * varredura completa da tabela de checkpoint, que CheckpointSqlite nao
+   * expoe publicamente (decisao registrada em F5.7.1: nao adicionar esse
+   * metodo la, por ser um caso critico/raro que so faz sentido investigado
+   * manualmente). Essa verificacao vive exclusivamente em
+   * SCRIPTS/reconciliar-consistencia.js, via leitura SQL direta e somente
+   * leitura sobre o mesmo arquivo .db.
    *
    * @param {Object} outbox - instancia de OutboxLocal
    * @param {Object} checkpoint - instancia de CheckpointSqlite
-   * @returns {Promise<Array<{eventId:string, outboxStatus:string, motivo:string}>>}
+   * @returns {Promise<Array<{eventId:string, outboxStatus:string, motivo:string, apenasAuditoria?:boolean}>>}
    */
   async auditarConsistencia(outbox, checkpoint) {
     const inconsistencias = [];
+
     for (const status of [ESTADOS_OUTBOX.SENT, ESTADOS_OUTBOX.REVIEW_STORED]) {
       // eslint-disable-next-line no-await-in-loop
       const itens = await outbox.listarPorStatus(status);
       for (const item of itens) {
         // eslint-disable-next-line no-await-in-loop
         const confirmado = await checkpoint.eventoJaConfirmado(item.eventId, item.contentHash);
-        if (!confirmado) {
-          inconsistencias.push({ eventId: item.eventId, outboxStatus: item.status, motivo: 'CHECKPOINT_AUSENTE' });
-          this._logger.warn('bootstrap', 'CHECKPOINT_INCONSISTENTE', { eventId: item.eventId, outboxStatus: item.status });
+        if (confirmado) continue;
+
+        // eslint-disable-next-line no-await-in-loop
+        const registro = await checkpoint.buscarEvento(item.eventId);
+        let motivo;
+        if (!registro) {
+          motivo = 'CHECKPOINT_AUSENTE';
+        } else if (registro.contentHash !== item.contentHash) {
+          motivo = 'CHECKPOINT_CONTRADITORIO';
+        } else if (registro.result == null) {
+          motivo = 'CHECKPOINT_INCOMPLETO';
+        } else {
+          motivo = 'CHECKPOINT_CONTRADITORIO';
+        }
+
+        inconsistencias.push({ eventId: item.eventId, outboxStatus: item.status, motivo });
+        this._logger.warn('bootstrap', 'CHECKPOINT_INCONSISTENTE', { eventId: item.eventId, outboxStatus: item.status, motivo });
+      }
+    }
+
+    for (const status of [ESTADOS_OUTBOX.REJECTED, ESTADOS_OUTBOX.FAILED]) {
+      // eslint-disable-next-line no-await-in-loop
+      const itens = await outbox.listarPorStatus(status);
+      for (const item of itens) {
+        // eslint-disable-next-line no-await-in-loop
+        const registro = await checkpoint.buscarEvento(item.eventId);
+        if (!registro) {
+          inconsistencias.push({ eventId: item.eventId, outboxStatus: item.status, motivo: 'CHECKPOINT_NUNCA_REGISTRADO', apenasAuditoria: true });
+          this._logger.warn('bootstrap', 'CHECKPOINT_INCONSISTENTE', { eventId: item.eventId, outboxStatus: item.status, motivo: 'CHECKPOINT_NUNCA_REGISTRADO', apenasAuditoria: true });
         }
       }
     }
+
     return inconsistencias;
   }
 }
