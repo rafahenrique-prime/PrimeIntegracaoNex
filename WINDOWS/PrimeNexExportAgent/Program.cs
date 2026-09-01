@@ -1,21 +1,23 @@
-// PRIME NEX EXPORT AGENT - skeleton (F6.13) + wrappers read-only (F6.14A).
+// PRIME NEX EXPORT AGENT - skeleton (F6.13) + wrappers read-only (F6.14A)
+// + IInputSender real (F6.14B1, SOMENTE via probe explicito abaixo).
 //
 // F6.14A implementou ISessionInspector/INexWindowInspector reais (somente
-// leitura). IInputSender/ISaveDialogController REAIS ainda NAO existem -
-// so os fakes de teste. Program.cs deliberadamente NAO monta nenhum
-// ExportAgentOrchestrator real aqui - isso evitaria que simplesmente rodar
-// este executavel pudesse, por acidente, alcancar um envio de tecla no
-// futuro (quando IInputSender real existir). Enquanto isso nao for
-// explicitamente autorizado (F6.14B+), este executavel permanece um
-// placeholder que nao interage com o NEX de forma alguma.
+// leitura). F6.14B1 implementou IInputSender real (WindowsInputSender),
+// mas ISaveDialogController REAL ainda NAO existe - so o fake de teste.
+// Program.cs deliberadamente NAO monta nenhum ExportAgentOrchestrator real
+// aqui, e a execucao padrao (sem argumento) continua zero-input - isso
+// evita que simplesmente rodar este executavel possa, por acidente,
+// alcancar um envio de tecla.
 //
-// Inspecao real read-only (F6.14A) fica atras de um argumento EXPLICITO
-// (--inspect-readonly) - sem argumento nenhum, o executavel so imprime a
-// mensagem de status abaixo e encerra. O harness invocado
-// (Diagnostics/ReadOnlyInspection.cs) nao referencia IInputSender/
-// ISaveDialogController em nenhum momento - essas interfaces de ACAO nem
-// tem implementacao real ainda, entao nao existe caminho de codigo
-// (acidental ou nao) daqui ate um Shift+F5.
+// Dois modos diagnosticos, cada um atras de um argumento EXPLICITO:
+//   --inspect-readonly                          -> zero input (F6.14A)
+//   --diagnostic-send-export-shortcut-once       -> PODE enviar Shift+F5
+//                                                    real (F6.14B1) - one
+//                                                    shot, nunca clica
+//                                                    Salvar/Cancelar.
+// Sem NENHUM argumento (ou um argumento nao reconhecido), o executavel so
+// imprime a mensagem de status abaixo e encerra - zero input em qualquer
+// caso.
 
 if (args.Length == 1 && args[0] == "--inspect-readonly")
 {
@@ -23,4 +25,12 @@ if (args.Length == 1 && args[0] == "--inspect-readonly")
     return;
 }
 
-Console.WriteLine("PRIME NEX EXPORT AGENT - wrappers read-only F6.14A. IInputSender/ISaveDialogController reais ainda NAO existem (ver F6.14B+). Este executavel nao envia nenhuma tecla/clique. Use --inspect-readonly para uma inspecao somente-leitura.");
+if (args.Length == 1 && args[0] == "--diagnostic-send-export-shortcut-once")
+{
+    PrimeNexExportAgent.Diagnostics.SendExportShortcutOnceProbe.Run();
+    return;
+}
+
+Console.WriteLine("PRIME NEX EXPORT AGENT - F6.14B1. Sem argumento reconhecido, ZERO acao foi executada.");
+Console.WriteLine("Use --inspect-readonly para uma inspecao somente-leitura.");
+Console.WriteLine("Use --diagnostic-send-export-shortcut-once para o probe supervisionado de Shift+F5 (PODE enviar tecla real - so execute sob o ritual BEFORE/AFTER).");
