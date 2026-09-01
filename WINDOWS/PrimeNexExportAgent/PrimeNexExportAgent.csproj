@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Fase F6.13 (skeleton): projeto ainda 100% livre de Win32/UI Automation
+    real. O alvo `net10.0-windows` já é definido agora (em vez de `net10.0`
+    puro) porque F6.14 precisará referenciar `System.Windows.Automation`
+    (UIAutomationClient/UIAutomationTypes, parte das reference assemblies
+    do Windows Desktop) - decidir isso mais cedo evita reestruturar o
+    projeto depois. Nada nesta fase usa esse acesso ainda.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PrimeNexExportAgent</RootNamespace>
+    <AssemblyName>PrimeNexExportAgent</AssemblyName>
+  </PropertyGroup>
+
+</Project>

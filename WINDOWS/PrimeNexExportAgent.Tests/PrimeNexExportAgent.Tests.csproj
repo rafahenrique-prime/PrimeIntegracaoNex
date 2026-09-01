@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>PrimeNexExportAgent.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    F6.13: framework de testes = xUnit. Sem biblioteca de mocking (Moq/NSubstitute)
+    nesta primeira fase - os testes usam fakes/spies escritos a mao no
+    proprio projeto (pasta Fakes/), exatamente como pedido, para nao
+    adicionar dependencia externa antes de precisarmos dela.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PrimeNexExportAgent\PrimeNexExportAgent.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -48,3 +48,9 @@ $RECYCLE.BIN/
 *.bak
 *.tmp
 *.temp
+
+# PRIME NEX EXPORT AGENT (WINDOWS/) - build .NET nao versionado
+# (F6.11 secao 15: codigo-fonte versionado, binario nao necessariamente
+# commitado - build reproduzivel via dotnet build/publish).
+WINDOWS/**/bin/
+WINDOWS/**/obj/
