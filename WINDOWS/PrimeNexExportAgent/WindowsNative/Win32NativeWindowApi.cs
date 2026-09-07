@@ -32,6 +32,18 @@ public sealed class Win32NativeWindowApi : INativeWindowApi
         return length > 0 ? sb.ToString(0, length) : null;
     }
 
+    public string? GetWindowTitle(nint hWnd)
+    {
+        if (!IsWindowValid(hWnd)) return null;
+
+        var length = Win32Interop.GetWindowTextLength(hWnd);
+        if (length == 0) return string.Empty; // sem titulo - resultado valido, nao erro
+
+        var sb = new StringBuilder(length + 1);
+        var written = Win32Interop.GetWindowText(hWnd, sb, sb.Capacity);
+        return written > 0 ? sb.ToString(0, written) : string.Empty;
+    }
+
     public nint GetOwner(nint hWnd)
     {
         if (!IsWindowValid(hWnd)) return 0;

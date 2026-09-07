@@ -1,13 +1,16 @@
+using PrimeNexExportAgent.Contracts;
 using PrimeNexExportAgent.WindowsInput;
 
 namespace PrimeNexExportAgent.Tests.Fakes;
 
 /// <summary>Fake de IInputNativeApi (F6.14B1) - simula
 /// SetForegroundWindow/GetForegroundWindow/SendShiftF5 sem tocar nenhuma
-/// API Win32 real. GetForegroundWindow suporta uma FILA de retornos para
-/// simular a 1a e a 2a confirmacao do PRE-INPUT TARGET GATE divergindo
-/// entre si.</summary>
-public sealed class FakeInputNativeApi : IInputNativeApi
+/// API Win32 real. GetForegroundWindow suporta uma FILA de retornos - a
+/// partir de F6.14B2.5 usada SOMENTE para a confirmacao FINAL direta
+/// (imediatamente antes do input), ja que o polling do PRE-INPUT TARGET
+/// GATE T4b foi movido para IForegroundWaiter/FakeForegroundWaiter.
+/// Tambem implementa IForegroundReader (mesmo GetForegroundWindow).</summary>
+public sealed class FakeInputNativeApi : IInputNativeApi, IForegroundReader
 {
     public int SetForegroundWindowCalls { get; private set; }
     public nint? LastSetForegroundWindowTarget { get; private set; }
@@ -46,5 +49,45 @@ public sealed class FakeInputNativeApi : IInputNativeApi
         SendShiftF5Calls++;
         if (ThrowOnSendShiftF5 is not null) throw ThrowOnSendShiftF5;
         return SendShiftF5Result;
+    }
+}
+
+/// <summary>Fake de IForegroundWaiter (F6.14B2.5) - usado pelos testes de
+/// WindowsInputSender (integracao): controla diretamente se o T4b "passa"
+/// ou "falha por timeout", sem exercitar o polling real (isso e testado
+/// separadamente em ForegroundWaiterTests, contra PollingForegroundWaiter
+/// de verdade).</summary>
+public sealed class FakeForegroundWaiter : IForegroundWaiter
+{
+    public bool Result { get; set; } = true;
+    public int WaitForForegroundCalls { get; private set; }
+    public nint? LastTargetReceived { get; private set; }
+
+    public bool WaitForForeground(nint targetHwnd)
+    {
+        WaitForForegroundCalls++;
+        LastTargetReceived = targetHwnd;
+        return Result;
+    }
+}
+
+/// <summary>Fake de IForegroundReader (F6.14B2.5) - usado pelos testes
+/// dedicados de PollingForegroundWaiter (component-level), independente de
+/// FakeInputNativeApi. Suporta uma FILA de retornos para simular varios
+/// polls sucessivos.</summary>
+public sealed class FakeForegroundReader : IForegroundReader
+{
+    public Queue<nint> ForegroundSequence { get; } = new();
+    private nint _lastValue;
+    public int GetForegroundWindowCalls { get; private set; }
+
+    public nint GetForegroundWindow()
+    {
+        GetForegroundWindowCalls++;
+        if (ForegroundSequence.Count > 0)
+        {
+            _lastValue = ForegroundSequence.Dequeue();
+        }
+        return _lastValue;
     }
 }

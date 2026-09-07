@@ -20,6 +20,16 @@ public interface IClock
     DateTime Now { get; }
 }
 
+/// <summary>Espera injetavel (F6.14B2.4) - abstrai Thread.Sleep para que
+/// testes de componentes com espera bounded (ex.: PollingSaveDialogWaiter)
+/// nunca precisem dormir de verdade. UNICO proposito: aguardar um
+/// intervalo de tempo, somente leitura em relacao ao NEX - nunca envia
+/// nenhuma acao.</summary>
+public interface IDelay
+{
+    void Wait(TimeSpan duration);
+}
+
 /// <summary>Lock exclusivo de execucao (G7) - Named Mutex do Windows na
 /// implementacao real (F6.14). Nesta fase, so o contrato.</summary>
 public interface IExecutionLock
@@ -68,9 +78,38 @@ public interface INexWindowInspector
 /// controles esperados) e G10-G12 (releitura pos-configuracao).</summary>
 public interface ISaveDialogInspector
 {
-    SaveDialogIdentityResult IdentifySaveDialog();
+    /// <summary>Recebe a MESMA NexAdminWindowIdentity ja validada (F6.14B2) -
+    /// usada para confirmar que o dialogo encontrado pertence ao NexAdmin
+    /// esperado (owner/processo coerente), nunca aceito por coincidencia.</summary>
+    SaveDialogIdentityResult IdentifySaveDialog(NexAdminWindowIdentity target);
 
-    SaveDialogReadbackResult ReadBack(string expectedDestination, string expectedFileName, string expectedFileType);
+    /// <summary>Recebe a MESMA SaveDialogIdentity ja retornada por
+    /// IdentifySaveDialog - nunca redescobre o dialogo por conta propria.</summary>
+    SaveDialogReadbackResult ReadBack(SaveDialogIdentity dialog, string expectedDestination, string expectedFileName, string expectedFileType);
+}
+
+/// <summary>
+/// F6.14B2.4 - resolve a race de tempo assincrona entre SendExportShortcut
+/// (Shift+F5) e o Windows efetivamente criar/exibir a janela "Salvar como"
+/// (evidencia real: o probe checou 0 candidatos no instante seguinte ao
+/// Shift+F5, mas o dialogo comprovadamente existia poucos instantes
+/// depois). Faz POLLING READ-ONLY, bounded por timeout, de
+/// ISaveDialogInspector.IdentifySaveDialog - NUNCA envia nenhuma acao
+/// (SendInput/SendExportShortcut) internamente, e NUNCA re-tenta a acao ja
+/// executada. "Poll" aqui significa "reconsultar um estado que pode mudar
+/// de forma assincrona", nao deve ser confundido com "retry de acao" -
+/// SendExportShortcut/SendInput continuam limitados a exatamente 1 chamada
+/// por execucao do Agent, em outro componente inteiramente (IInputSender).
+/// </summary>
+public interface ISaveDialogWaiter
+{
+    /// <summary>Consulta IdentifySaveDialog repetidamente (mesma target,
+    /// nunca redescoberta) ate: (a) encontrar exatamente 1 dialogo valido
+    /// -> retorna Pass imediatamente; (b) detectar ambiguidade (mais de 1
+    /// candidato) -> retorna Fail imediatamente, nunca espera "resolver
+    /// sozinha"; (c) esgotar o timeout bounded -> retorna o ultimo Fail
+    /// (fail-closed, nunca espera indefinidamente).</summary>
+    SaveDialogIdentityResult WaitForSaveDialog(NexAdminWindowIdentity target);
 }
 
 /// <summary>Observa tamanho/mtime de um arquivo ao longo do tempo, sem
@@ -80,18 +119,73 @@ public interface IFileStabilityChecker
     FileStabilityResult WaitForStable(string filePath, TimeSpan timeout);
 }
 
+/// <summary>
+/// F6.14B2.9A - vigia um DIRETORIO inteiro (nao um caminho ja conhecido
+/// como IFileStabilityChecker) em torno de uma unica acao real de save,
+/// para: (a) exigir o diretorio vazio ANTES da acao (fail-closed se nao
+/// estiver); (b) depois da acao, fazer polling somente-leitura ate o
+/// ÚNICO arquivo esperado (nome exato) aparecer e estabilizar - qualquer
+/// arquivo com nome inesperado, ou mais de um arquivo, e fail-closed
+/// imediato, nunca "escolhe o mais provavel". NUNCA repete a acao que
+/// causou a escrita (isso e responsabilidade exclusiva do chamador, que
+/// so pode ter enviado essa acao exatamente 1 vez) - este componente e
+/// puramente de observacao.
+/// </summary>
+public interface IExportStageWatcher
+{
+    /// <summary>Confirma que `directoryPath` esta completamente vazio -
+    /// chamado ANTES de qualquer acao real. Nunca apaga nada
+    /// automaticamente para "tornar vazio".</summary>
+    ExportStageWatchResult ConfirmEmptyBeforeAction(string directoryPath);
+
+    /// <summary>Polling somente-leitura, bounded por timeout, ate o
+    /// arquivo `expectedFileName` (nome exato, sem variacao) aparecer em
+    /// `directoryPath` e estabilizar (mesmo tamanho e mesma
+    /// LastWriteTimeUtc em observacoes consecutivas, tamanho sempre
+    /// maior que zero). Fail-closed para: 0 arquivos ate o timeout;
+    /// qualquer arquivo com nome diferente do esperado; mais de 1
+    /// arquivo presente (mesmo que um deles seja o esperado). Nunca
+    /// reinicia nenhuma acao - so observa.</summary>
+    ExportStageWatchResult WaitForExpectedFileOnly(string directoryPath, string expectedFileName, TimeSpan timeout);
+}
+
 /// <summary>Fronteira para o Reader real (SERVICO/leitor-export-vendas.js,
-/// via SCRIPTS/validar-export-vendas.js - F6.12 secao 12). Nunca
-/// reimplementa a regra de negocio em C#.</summary>
+/// via SCRIPTS/validar-export-vendas.js - F6.12 secao 12, implementado em
+/// F6.14B2.10A). Nunca reimplementa a regra de negocio em C#.</summary>
 public interface IExportValidator
 {
     ExportValidationResult Validate(string filePath);
 }
 
-/// <summary>Move atomico staging -> EXPORTADOS (F6.12 secao 14).</summary>
+/// <summary>
+/// F6.14B2.10A - abstracao MINIMA de execucao de subprocesso, so o
+/// necessario para NodeExportValidator chamar o CLI Node de forma
+/// testavel (fake deterministico nos testes, Process.Start real em
+/// producao). Deliberadamente NAO e' um framework generico de processos -
+/// so retorna o que o chamador precisa para decidir fail-closed
+/// (iniciou? timeout? exit code? stdout/stderr?).
+/// </summary>
+public interface IProcessRunner
+{
+    ProcessRunResult Run(string fileName, IReadOnlyList<string> arguments, TimeSpan timeout);
+}
+
+/// <summary>Move atomico staging -> EXPORTADOS (F6.12 secao 14,
+/// implementado em F6.14B2.11A). Assinatura preservada sem alteracao.</summary>
 public interface IAtomicPublisher
 {
     PublishResult Publish(string sourcePath, string destinationDirectory);
+}
+
+/// <summary>
+/// F6.14B2.11A - abstracao MINIMA para tornar FileMoveAtomicPublisher
+/// testavel sem tocar o filesystem real do runner de testes de forma
+/// nao-simulavel (ex.: forcar uma falha de Move). Producao: File.Move.
+/// Testes: fake deterministico.
+/// </summary>
+public interface IFileMover
+{
+    void Move(string sourcePath, string destinationPath);
 }
 
 /// <summary>Log estruturado (F6.12 secao 17) - nunca payload de negocio.</summary>
@@ -138,18 +232,75 @@ public interface IInputSender
     void SendExportShortcut(NexAdminWindowIdentity target);
 }
 
+/// <summary>F6.14B2.5 - fronteira somente-leitura para consultar qual HWND
+/// esta atualmente em foreground. Deliberadamente MINIMA - nunca inclui
+/// SetForegroundWindow (isso pertence exclusivamente a IInputNativeApi,
+/// chamado no maximo 1 vez por execucao) nem qualquer outro metodo de
+/// acao.</summary>
+public interface IForegroundReader
+{
+    nint GetForegroundWindow();
+}
+
+/// <summary>
+/// F6.14B2.5 - corrige a race de tempo assincrona entre SetForegroundWindow
+/// retornar sucesso e o foreground do Windows efetivamente refletir essa
+/// troca (evidencia real: SetForegroundWindow foi chamado 1x, mas a
+/// confirmacao imediata seguinte via GetForegroundWindow ainda mostrava
+/// outra janela). Faz POLLING READ-ONLY, bounded por timeout, de
+/// GetForegroundWindow - NUNCA chama SetForegroundWindow (isso permanece
+/// limitado a exatamente 1 chamada, em IInputNativeApi/WindowsInputSender)
+/// e NUNCA chama SendInput. "Poll" aqui e observacao bounded do resultado
+/// de uma acao ja executada - nunca retry dessa acao.
+/// </summary>
+public interface IForegroundWaiter
+{
+    /// <summary>Aguarda GetForegroundWindow() == targetHwnd, bounded por
+    /// timeout. Retorna true assim que confirmado, false se o timeout for
+    /// atingido antes - nunca lanca excecao, nunca chama nenhuma acao.</summary>
+    bool WaitForForeground(nint targetHwnd);
+}
+
+/// <summary>
+/// F6.14B2.12C1 - COMMITTER OPERACIONAL ESTREITO: unica interface (alem de
+/// ISaveDialogControlApi.ClickButton, ja existente e restrita ao probe
+/// diagnostico) capaz de disparar BM_CLICK no botao Salvar em um fluxo
+/// que pode chegar a ser usado pelo Orchestrator real. Existe
+/// exclusivamente para nao precisar desbloquear
+/// ISaveDialogController.ClickSave() genericamente - CommitOnce() sempre
+/// reidentifica o dialogo do zero (nunca reaproveita uma identificacao
+/// antiga) e exige o MESMO HWND que `expectedDialog`, antes de resolver e
+/// clicar CtrlId 1 exatamente 1 vez. Dispatched=true significa SOMENTE
+/// "BM_CLICK foi despachado" - NUNCA "arquivo salvo/dialogo fechado/XLS
+/// valido/publicacao concluida". A prova real de sucesso do Save continua
+/// vindo exclusivamente de IFileStabilityChecker/IExportStageWatcher,
+/// depois, nunca do retorno desta chamada.
+/// </summary>
+public interface IConfirmedSaveDialogCommitter
+{
+    SaveDialogCommitResult CommitOnce(NexAdminWindowIdentity target, SaveDialogIdentity expectedDialog);
+}
+
 /// <summary>Escreve os campos do dialogo "Salvar como" (destino/nome/tipo)
 /// e, so depois do read-back (G10-G12) confirmar, clica Salvar. Tambem
 /// permite Cancelar, mas somente com a identidade do dialogo reconfirmada
 /// (F6.12 secao 16).</summary>
 public interface ISaveDialogController
 {
-    void Configure(string destination, string fileName, string fileType);
+    /// <summary>Recebe a MESMA SaveDialogIdentity ja retornada por
+    /// ISaveDialogInspector.IdentifySaveDialog (F6.14B2) - nunca escreve
+    /// num dialogo redescoberto por conta propria.</summary>
+    void Configure(SaveDialogIdentity dialog, string destination, string fileName, string fileType);
 
-    /// <summary>Unica chamada por execucao, somente apos G10-G12 = PASS.</summary>
-    void ClickSave();
+    /// <summary>Unica chamada por execucao, somente apos G10-G12 = PASS.
+    /// F6.14B2: NAO homologado ainda - a implementacao real desta fase
+    /// (WindowsSaveDialogController) lanca NotSupportedException sempre,
+    /// nunca clica de fato.</summary>
+    void ClickSave(SaveDialogIdentity dialog);
 
     /// <summary>Cleanup permitido somente com identidade do dialogo ja
-    /// reconfirmada pelo chamador antes de invocar isto.</summary>
-    void CancelSaveDialog();
+    /// reconfirmada pelo chamador antes de invocar isto. F6.14B2: NAO
+    /// homologado ainda - a implementacao real desta fase lanca
+    /// NotSupportedException sempre.</summary>
+    void CancelSaveDialog(SaveDialogIdentity dialog);
 }

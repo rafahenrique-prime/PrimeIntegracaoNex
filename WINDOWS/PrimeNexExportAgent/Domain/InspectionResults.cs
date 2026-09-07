@@ -88,24 +88,30 @@ public sealed class NexWindowCheckResult
 }
 
 /// G8+G9: identidade do dialogo "Salvar como" (#32770) e presenca dos 5
-/// controles esperados (1148/1137/1136/1/2), todos Enabled=True.
+/// controles esperados (1148/1137/1136/1/2), todos Enabled=True. So
+/// retorna a SaveDialogIdentity (F6.14B2) quando tudo isso for verdadeiro -
+/// essa mesma identidade flui, sem ser recalculada, ate Configure/
+/// ClickSave/CancelSaveDialog.
 public sealed class SaveDialogIdentityResult
 {
     public bool Passed { get; }
     public AgentErrorCode ErrorCode { get; }
     public string Reason { get; }
+    public SaveDialogIdentity? Dialog { get; }
 
-    private SaveDialogIdentityResult(bool passed, AgentErrorCode errorCode, string reason)
+    private SaveDialogIdentityResult(bool passed, AgentErrorCode errorCode, string reason, SaveDialogIdentity? dialog)
     {
         Passed = passed;
         ErrorCode = errorCode;
         Reason = reason;
+        Dialog = dialog;
     }
 
-    public static SaveDialogIdentityResult Pass() => new(true, AgentErrorCode.None, string.Empty);
+    public static SaveDialogIdentityResult Pass(SaveDialogIdentity dialog) =>
+        new(true, AgentErrorCode.None, string.Empty, dialog);
 
     public static SaveDialogIdentityResult Fail(AgentErrorCode errorCode, string reason) =>
-        new(false, errorCode, reason);
+        new(false, errorCode, reason, null);
 }
 
 /// G10-G12: releitura pos-configuracao (destino/nome/tipo). Nunca reaproveita
@@ -171,6 +177,119 @@ public sealed class ExportValidationResult
 
     public static ExportValidationResult Fail(AgentErrorCode errorCode, string reason) =>
         new(false, 0, errorCode, reason);
+}
+
+/// Resultado de IProcessRunner.Run() (F6.14B2.10A) - somente os dados
+/// necessarios para o chamador decidir fail-closed. `Started=false`
+/// significa que o processo nem chegou a iniciar (ex.: executavel nao
+/// encontrado) - nesse caso ExitCode/StdOut/StdErr sao irrelevantes.
+/// `TimedOut=true` significa que o processo foi encerrado (Kill) por
+/// exceder o timeout - NUNCA uma segunda tentativa e' feita a partir
+/// disso, e o processo morto e' responsabilidade exclusiva de quem o
+/// iniciou (nunca APIs de memoria remota).
+public sealed class ProcessRunResult
+{
+    public bool Started { get; }
+    public bool TimedOut { get; }
+    public int? ExitCode { get; }
+    public string StdOut { get; }
+    public string StdErr { get; }
+
+    public ProcessRunResult(bool started, bool timedOut, int? exitCode, string stdOut, string stdErr)
+    {
+        Started = started;
+        TimedOut = timedOut;
+        ExitCode = exitCode;
+        StdOut = stdOut;
+        StdErr = stdErr;
+    }
+
+    public static ProcessRunResult FailedToStart() => new(false, false, null, string.Empty, string.Empty);
+}
+
+/// Resultado de ValidatedExportPublicationCoordinator.Execute()
+/// (F6.14B2.11B) - distingue as 3 saidas possiveis (rejeicao na
+/// validacao, rejeicao na publicacao, sucesso) sem PII, carregando os
+/// resultados originais de Validate()/Publish() para diagnostico (nunca
+/// reimplementando a semantica deles).
+public sealed class ValidatedPublicationResult
+{
+    public bool Success { get; }
+    public bool ValidationFailed { get; }
+    public bool PublicationFailed { get; }
+    public ExportValidationResult Validation { get; }
+    public PublishResult? Publication { get; }
+
+    private ValidatedPublicationResult(bool success, bool validationFailed, bool publicationFailed, ExportValidationResult validation, PublishResult? publication)
+    {
+        Success = success;
+        ValidationFailed = validationFailed;
+        PublicationFailed = publicationFailed;
+        Validation = validation;
+        Publication = publication;
+    }
+
+    /// <summary>Validate() reprovou - Publish() NUNCA foi chamado.</summary>
+    public static ValidatedPublicationResult ValidationRejected(ExportValidationResult validation) =>
+        new(success: false, validationFailed: true, publicationFailed: false, validation, publication: null);
+
+    /// <summary>Validate() aprovou, mas Publish() falhou - zero retry de
+    /// qualquer um dos dois.</summary>
+    public static ValidatedPublicationResult PublicationRejected(ExportValidationResult validation, PublishResult publication) =>
+        new(success: false, validationFailed: false, publicationFailed: true, validation, publication);
+
+    public static ValidatedPublicationResult Succeeded(ExportValidationResult validation, PublishResult publication) =>
+        new(success: true, validationFailed: false, publicationFailed: false, validation, publication);
+}
+
+/// Resultado do IExportStageWatcher (F6.14B2.9A) - confirmacao de
+/// diretorio vazio antes da acao, e observacao pos-acao ate o unico
+/// arquivo esperado estabilizar. Nunca reaproveita FileStabilityResult
+/// (que observa um UNICO caminho ja conhecido) porque este tipo tambem
+/// precisa expressar "diretorio nao vazio antes" e "arquivo(s)
+/// inesperado(s) depois" - problemas distintos do de um unico arquivo.
+public sealed class ExportStageWatchResult
+{
+    public bool Passed { get; }
+    public AgentErrorCode ErrorCode { get; }
+    public string Reason { get; }
+
+    private ExportStageWatchResult(bool passed, AgentErrorCode errorCode, string reason)
+    {
+        Passed = passed;
+        ErrorCode = errorCode;
+        Reason = reason;
+    }
+
+    public static ExportStageWatchResult Pass() => new(true, AgentErrorCode.None, string.Empty);
+
+    public static ExportStageWatchResult Fail(AgentErrorCode errorCode, string reason) =>
+        new(false, errorCode, reason);
+}
+
+/// Resultado de IConfirmedSaveDialogCommitter.CommitOnce() (F6.14B2.12C1).
+/// Dispatched=true significa SOMENTE que BM_CLICK foi despachado
+/// exatamente 1 vez ao CtrlId 1 (Salvar) ja revalidado - NUNCA que o
+/// arquivo foi salvo/o dialogo fechou/o XLS e valido. A prova real
+/// continua sendo obtida depois, via IFileStabilityChecker/
+/// IExportStageWatcher contra o sistema de arquivos.
+public sealed class SaveDialogCommitResult
+{
+    public bool Dispatched { get; }
+    public AgentErrorCode ErrorCode { get; }
+    public string Reason { get; }
+
+    private SaveDialogCommitResult(bool dispatched, AgentErrorCode errorCode, string reason)
+    {
+        Dispatched = dispatched;
+        ErrorCode = errorCode;
+        Reason = reason;
+    }
+
+    public static SaveDialogCommitResult Pass() => new(true, AgentErrorCode.None, string.Empty);
+
+    public static SaveDialogCommitResult Fail(AgentErrorCode errorCode, string reason) =>
+        new(false, errorCode, reason);
 }
 
 /// Resultado da publicacao atomica (move EXPORT_STAGE -> EXPORTADOS).

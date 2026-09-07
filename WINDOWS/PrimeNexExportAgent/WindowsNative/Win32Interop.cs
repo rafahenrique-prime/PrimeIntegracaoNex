@@ -32,6 +32,14 @@ internal static class Win32Interop
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     internal static extern int GetClassName(nint hWnd, StringBuilder lpClassName, int nMaxCount);
 
+    /// <summary>F6.14B2 - somente leitura, usada para confirmar o titulo
+    /// exato do dialogo #32770 ("Salvar como").</summary>
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern int GetWindowText(nint hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern int GetWindowTextLength(nint hWnd);
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern nint GetWindow(nint hWnd, uint uCmd);
 

@@ -1,3 +1,4 @@
+using System.IO;
 using PrimeNexExportAgent.Contracts;
 using PrimeNexExportAgent.Domain;
 using PrimeNexExportAgent.Logging;
@@ -75,6 +76,16 @@ public sealed class FakeNexWindowInspector : INexWindowInspector
         _spy.Record(nameof(CheckSafeState));
         return SafeStateResult;
     }
+
+    public NexWindowCheckResult SafeStateForClientNavigationResult { get; set; } = NexWindowCheckResult.Pass();
+    public NexAdminWindowIdentity? LastClientNavigationTargetReceived { get; private set; }
+
+    public NexWindowCheckResult CheckSafeStateForClientNavigation(NexAdminWindowIdentity target)
+    {
+        LastClientNavigationTargetReceived = target;
+        _spy.Record(nameof(CheckSafeStateForClientNavigation));
+        return SafeStateForClientNavigationResult;
+    }
 }
 
 public sealed class FakeInputSender : IInputSender
@@ -98,20 +109,35 @@ public sealed class FakeInputSender : IInputSender
 public sealed class FakeSaveDialogInspector : ISaveDialogInspector
 {
     private readonly CallSpy _spy;
-    public SaveDialogIdentityResult IdentityResult { get; set; } = SaveDialogIdentityResult.Pass();
+    public static readonly SaveDialogIdentity DefaultDialog = new(dialogHandle: 0x7000);
+
+    public SaveDialogIdentityResult IdentityResult { get; set; } = SaveDialogIdentityResult.Pass(DefaultDialog);
     public SaveDialogReadbackResult ReadbackResult { get; set; } = SaveDialogReadbackResult.Pass();
+    public NexAdminWindowIdentity? LastTargetReceived { get; private set; }
+    public SaveDialogIdentity? LastDialogReceivedInReadBack { get; private set; }
     public (string destination, string fileName, string fileType)? LastReadBackArgs { get; private set; }
+    public int IdentifySaveDialogCalls { get; private set; }
+
+    /// <summary>F6.14B2.4 - fila opcional de resultados sucessivos, um por
+    /// chamada, para simular a race de tempo (0 candidatos no primeiro
+    /// poll, 1 depois) sem tocar Win32 real. Se vazia, sempre retorna
+    /// IdentityResult (comportamento anterior, usado pelos 78 testes do
+    /// orquestrador que nao envolvem polling).</summary>
+    public Queue<SaveDialogIdentityResult> IdentityResultSequence { get; } = new();
 
     public FakeSaveDialogInspector(CallSpy spy) => _spy = spy;
 
-    public SaveDialogIdentityResult IdentifySaveDialog()
+    public SaveDialogIdentityResult IdentifySaveDialog(NexAdminWindowIdentity target)
     {
+        LastTargetReceived = target;
+        IdentifySaveDialogCalls++;
         _spy.Record(nameof(IdentifySaveDialog));
-        return IdentityResult;
+        return IdentityResultSequence.Count > 0 ? IdentityResultSequence.Dequeue() : IdentityResult;
     }
 
-    public SaveDialogReadbackResult ReadBack(string expectedDestination, string expectedFileName, string expectedFileType)
+    public SaveDialogReadbackResult ReadBack(SaveDialogIdentity dialog, string expectedDestination, string expectedFileName, string expectedFileType)
     {
+        LastDialogReceivedInReadBack = dialog;
         LastReadBackArgs = (expectedDestination, expectedFileName, expectedFileType);
         _spy.Record(nameof(ReadBack));
         return ReadbackResult;
@@ -125,25 +151,29 @@ public sealed class FakeSaveDialogController : ISaveDialogController
     public int ClickSaveCalls { get; private set; }
     public int CancelSaveDialogCalls { get; private set; }
     public Exception? ThrowOnClickSave { get; set; }
+    public Exception? ThrowOnConfigure { get; set; }
+    public SaveDialogIdentity? LastDialogReceivedInConfigure { get; private set; }
     public (string destination, string fileName, string fileType)? LastConfigureArgs { get; private set; }
 
     public FakeSaveDialogController(CallSpy spy) => _spy = spy;
 
-    public void Configure(string destination, string fileName, string fileType)
+    public void Configure(SaveDialogIdentity dialog, string destination, string fileName, string fileType)
     {
         ConfigureCalls++;
+        LastDialogReceivedInConfigure = dialog;
         LastConfigureArgs = (destination, fileName, fileType);
         _spy.Record(nameof(Configure));
+        if (ThrowOnConfigure is not null) throw ThrowOnConfigure;
     }
 
-    public void ClickSave()
+    public void ClickSave(SaveDialogIdentity dialog)
     {
         ClickSaveCalls++;
         _spy.Record(nameof(ClickSave));
         if (ThrowOnClickSave is not null) throw ThrowOnClickSave;
     }
 
-    public void CancelSaveDialog()
+    public void CancelSaveDialog(SaveDialogIdentity dialog)
     {
         CancelSaveDialogCalls++;
         _spy.Record(nameof(CancelSaveDialog));
@@ -192,6 +222,26 @@ public sealed class FakeAtomicPublisher : IAtomicPublisher
     }
 }
 
+public sealed class FakeConfirmedSaveDialogCommitter : IConfirmedSaveDialogCommitter
+{
+    private readonly CallSpy _spy;
+    public SaveDialogCommitResult Result { get; set; } = SaveDialogCommitResult.Pass();
+    public int CommitOnceCalls { get; private set; }
+    public NexAdminWindowIdentity? LastTargetReceived { get; private set; }
+    public SaveDialogIdentity? LastExpectedDialogReceived { get; private set; }
+
+    public FakeConfirmedSaveDialogCommitter(CallSpy spy) => _spy = spy;
+
+    public SaveDialogCommitResult CommitOnce(NexAdminWindowIdentity target, SaveDialogIdentity expectedDialog)
+    {
+        CommitOnceCalls++;
+        LastTargetReceived = target;
+        LastExpectedDialogReceived = expectedDialog;
+        _spy.Record(nameof(CommitOnce));
+        return Result;
+    }
+}
+
 public sealed class FakeAgentLogger : IAgentLogger
 {
     public List<AgentLogEvent> Events { get; } = new();
@@ -219,5 +269,134 @@ public sealed class FakeAgentLogger : IAgentLogger
             throw ex;
         }
         Events.Add(evt);
+    }
+}
+
+/// <summary>Fake de ISaveDialogWaiter (F6.14B2.4) - usado pelos testes do
+/// ORQUESTRADOR (nao pelos testes dedicados do waiter real). Delega
+/// diretamente a FakeSaveDialogInspector.IdentifySaveDialog UMA vez (sem
+/// polling nenhum) - preserva o comportamento e as asserções de spy
+/// ("IdentifySaveDialog" chamado 1x, na ordem certa) ja existentes nos 78
+/// testes do orquestrador, que nao precisam simular a race de tempo.</summary>
+public sealed class FakeSaveDialogWaiter : ISaveDialogWaiter
+{
+    private readonly ISaveDialogInspector _inspector;
+    public int WaitForSaveDialogCalls { get; private set; }
+
+    public FakeSaveDialogWaiter(ISaveDialogInspector inspector) => _inspector = inspector;
+
+    public SaveDialogIdentityResult WaitForSaveDialog(NexAdminWindowIdentity target)
+    {
+        WaitForSaveDialogCalls++;
+        return _inspector.IdentifySaveDialog(target);
+    }
+}
+
+/// <summary>Fake de IDelay (F6.14B2.4) - NUNCA dorme de verdade. Registra
+/// chamadas e, opcionalmente, avanca um FakeClock compartilhado (via
+/// OnWait) para simular passagem de tempo de forma deterministica em
+/// testes de componentes com timeout bounded (ex.: PollingSaveDialogWaiter).</summary>
+/// <summary>Fake de IExportStageWatcher (F6.14B2.9C) - permite aos testes
+/// da orquestracao do probe de ClickSave controlar diretamente o
+/// resultado dos 2 gates de filesystem, sem tocar disco nenhum.</summary>
+public sealed class FakeExportStageWatcher : IExportStageWatcher
+{
+    private readonly CallSpy? _spy;
+    public ExportStageWatchResult ConfirmEmptyResult { get; set; } = ExportStageWatchResult.Pass();
+    public ExportStageWatchResult WaitResult { get; set; } = ExportStageWatchResult.Pass();
+    public int ConfirmEmptyBeforeActionCalls { get; private set; }
+    public int WaitForExpectedFileOnlyCalls { get; private set; }
+    public string? LastExpectedFileNameReceived { get; private set; }
+
+    /// <summary>F6.14B2.9C: executado no exato momento de
+    /// WaitForExpectedFileOnly - usado por testes para simular um agente
+    /// EXTERNO alterando EXPORTADOS durante a janela de espera (o novo
+    /// codigo do probe nunca escreve em EXPORTADOS por si mesmo).</summary>
+    public Action? OnWait { get; set; }
+
+    public FakeExportStageWatcher() { }
+
+    /// <summary>F6.14B2.12E: variante com CallSpy compartilhado, usada pelo
+    /// OrchestratorFixture para provar ORDEM entre ConfirmEmptyBeforeAction/
+    /// WaitForExpectedFileOnly e as demais interfaces do Orchestrator.</summary>
+    public FakeExportStageWatcher(CallSpy spy) => _spy = spy;
+
+    public ExportStageWatchResult ConfirmEmptyBeforeAction(string directoryPath)
+    {
+        ConfirmEmptyBeforeActionCalls++;
+        _spy?.Record(nameof(ConfirmEmptyBeforeAction));
+        return ConfirmEmptyResult;
+    }
+
+    public ExportStageWatchResult WaitForExpectedFileOnly(string directoryPath, string expectedFileName, TimeSpan timeout)
+    {
+        WaitForExpectedFileOnlyCalls++;
+        LastExpectedFileNameReceived = expectedFileName;
+        _spy?.Record(nameof(WaitForExpectedFileOnly));
+        OnWait?.Invoke();
+        return WaitResult;
+    }
+}
+
+/// <summary>Fake de IProcessRunner (F6.14B2.10A) - permite aos testes de
+/// NodeExportValidator controlar exatamente o resultado do subprocesso
+/// (Started/TimedOut/ExitCode/StdOut/StdErr) sem nunca chamar node.exe de
+/// verdade. Registra os argumentos recebidos para provar que o CLI/
+/// caminho corretos foram passados.</summary>
+public sealed class FakeProcessRunner : IProcessRunner
+{
+    public int RunCalls { get; private set; }
+    public string? LastFileName { get; private set; }
+    public IReadOnlyList<string>? LastArguments { get; private set; }
+    public TimeSpan? LastTimeout { get; private set; }
+    public ProcessRunResult Result { get; set; } = new(started: true, timedOut: false, exitCode: 0, stdOut: "{\"ok\":true,\"rows\":0}\n", stdErr: string.Empty);
+    public Exception? ThrowOnRun { get; set; }
+
+    public ProcessRunResult Run(string fileName, IReadOnlyList<string> arguments, TimeSpan timeout)
+    {
+        RunCalls++;
+        LastFileName = fileName;
+        LastArguments = arguments;
+        LastTimeout = timeout;
+        if (ThrowOnRun is not null) throw ThrowOnRun;
+        return Result;
+    }
+}
+
+/// <summary>Fake de IFileMover (F6.14B2.11A) - permite simular falha de
+/// Move (para provar zero-retry/zero-fallback) sem depender de
+/// condicoes reais de filesystem dificeis de forcar (ex.: arquivo
+/// bloqueado). Por padrao delega para File.Move real, entao os testes
+/// de fluxo feliz continuam exercitando o filesystem de verdade em
+/// diretorios temporarios.</summary>
+public sealed class FakeFileMover : IFileMover
+{
+    public int MoveCalls { get; private set; }
+    public string? LastSource { get; private set; }
+    public string? LastDestination { get; private set; }
+    public Exception? ThrowOnMove { get; set; }
+    public bool DelegateToRealMove { get; set; } = true;
+
+    public void Move(string sourcePath, string destinationPath)
+    {
+        MoveCalls++;
+        LastSource = sourcePath;
+        LastDestination = destinationPath;
+        if (ThrowOnMove is not null) throw ThrowOnMove;
+        if (DelegateToRealMove) File.Move(sourcePath, destinationPath);
+    }
+}
+
+public sealed class FakeDelay : IDelay
+{
+    public int WaitCalls { get; private set; }
+    public List<TimeSpan> Durations { get; } = new();
+    public Action<TimeSpan>? OnWait { get; set; }
+
+    public void Wait(TimeSpan duration)
+    {
+        WaitCalls++;
+        Durations.Add(duration);
+        OnWait?.Invoke(duration);
     }
 }

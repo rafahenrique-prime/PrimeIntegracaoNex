@@ -24,6 +24,12 @@ public interface INativeWindowApi
     /// for invalido/a consulta falhar.</summary>
     string? GetClassName(nint hWnd);
 
+    /// <summary>Titulo/texto da janela (GetWindowText) - F6.14B2, usado
+    /// para confirmar o titulo exato "Salvar como" do dialogo #32770.
+    /// Retorna null se o HWND for invalido/a consulta falhar; string vazia
+    /// e um resultado valido (janela sem titulo), nunca confundido com null.</summary>
+    string? GetWindowTitle(nint hWnd);
+
     /// <summary>HWND dono (GW_OWNER) da janela informada, ou 0 se nao tiver
     /// dono/o HWND for invalido (F6.14A.2 - usado para classificar
     /// infraestrutura Delphi/Intercom, nunca para o filtro de "top-level").</summary>

@@ -23,7 +23,7 @@ public sealed class ExportAgentOrchestratorTests
         Assert.Equal(AgentStage.Success, result.FinalStage);
         Assert.Equal(AgentErrorCode.None, result.ErrorCode);
         Assert.Equal(1, fx.InputSender.SendExportShortcutCalls);
-        Assert.Equal(1, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(1, fx.Committer.CommitOnceCalls);
         Assert.Equal(1, fx.SaveDialogController.ConfigureCalls);
         Assert.Equal(1, fx.Lock.TryAcquireCalls);
         Assert.Equal(1, fx.Lock.ReleaseCalls);
@@ -43,7 +43,7 @@ public sealed class ExportAgentOrchestratorTests
         Assert.Equal(AgentStage.SkippedBusy, result.FinalStage);
         Assert.Equal(AgentErrorCode.LockBusy, result.ErrorCode);
         Assert.Equal(0, fx.InputSender.SendExportShortcutCalls);
-        Assert.Equal(0, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
         // Lock nao foi de fato adquirido - Release() nao deveria ser chamado
         // (nada a liberar).
         Assert.Equal(0, fx.Lock.ReleaseCalls);
@@ -211,7 +211,7 @@ public sealed class ExportAgentOrchestratorTests
 
         Assert.False(result.Success);
         Assert.Equal(1, fx.InputSender.SendExportShortcutCalls);
-        Assert.Equal(0, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
     }
 
     // ---------- I. G9 falha (controles ausentes/identidade errada) ----------
@@ -225,7 +225,7 @@ public sealed class ExportAgentOrchestratorTests
 
         Assert.False(result.Success);
         Assert.Equal(1, fx.InputSender.SendExportShortcutCalls);
-        Assert.Equal(0, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
     }
 
     // ---------- J/K/L. G10/G11/G12 falham individualmente ----------
@@ -238,7 +238,7 @@ public sealed class ExportAgentOrchestratorTests
         var result = fx.BuildOrchestrator().Run();
 
         Assert.False(result.Success);
-        Assert.Equal(0, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
         Assert.Equal(1, fx.SaveDialogController.ConfigureCalls); // configurar aconteceu, mas nunca confiado
     }
 
@@ -251,7 +251,7 @@ public sealed class ExportAgentOrchestratorTests
         var result = fx.BuildOrchestrator().Run();
 
         Assert.False(result.Success);
-        Assert.Equal(0, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
     }
 
     [Fact]
@@ -263,7 +263,7 @@ public sealed class ExportAgentOrchestratorTests
         var result = fx.BuildOrchestrator().Run();
 
         Assert.False(result.Success);
-        Assert.Equal(0, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
     }
 
     // ---------- M. G10-G12 PASS -> 1 ClickSave ----------
@@ -274,7 +274,7 @@ public sealed class ExportAgentOrchestratorTests
 
         fx.BuildOrchestrator().Run();
 
-        Assert.Equal(1, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(1, fx.Committer.CommitOnceCalls);
     }
 
     // ---------- N. Excecao em SendExportShortcut ----------
@@ -290,7 +290,7 @@ public sealed class ExportAgentOrchestratorTests
         Assert.Equal(AgentStage.Failed, result.FinalStage);
         Assert.Equal(AgentErrorCode.UnexpectedException, result.ErrorCode);
         Assert.Equal(1, fx.Lock.ReleaseCalls);
-        Assert.Equal(0, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
     }
 
     // ---------- N2. Excecao na PRIMEIRA chamada de log (F6.13.2 correcao) ----------
@@ -312,7 +312,7 @@ public sealed class ExportAgentOrchestratorTests
         Assert.Equal(AgentStage.Failed, result.FinalStage);
         Assert.Equal(AgentErrorCode.UnexpectedException, result.ErrorCode);
         Assert.Equal(0, fx.InputSender.SendExportShortcutCalls);
-        Assert.Equal(0, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
         // Falhou antes mesmo de tentar o lock - Release() nao deve ter sido chamado.
         Assert.Equal(0, fx.Lock.ReleaseCalls);
     }
@@ -335,7 +335,7 @@ public sealed class ExportAgentOrchestratorTests
         Assert.Equal(AgentStage.Failed, result.FinalStage);
         Assert.Equal(AgentErrorCode.UnexpectedException, result.ErrorCode);
         Assert.Equal(0, fx.InputSender.SendExportShortcutCalls);
-        Assert.Equal(0, fx.SaveDialogController.ClickSaveCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
         Assert.Equal(0, fx.Lock.ReleaseCalls);
         // Logger sempre lanca - nenhum evento chega a ser de fato registrado.
         Assert.Empty(fx.Logger.Events);
@@ -383,8 +383,135 @@ public sealed class ExportAgentOrchestratorTests
         fx.BuildOrchestrator().Run();
 
         Assert.True(fx.Spy.Before("Configure", 1, "ReadBack", 1));
-        Assert.True(fx.Spy.Before("ReadBack", 1, "ClickSave", 1));
+        Assert.True(fx.Spy.Before("ReadBack", 1, "CommitOnce", 1));
         Assert.True(fx.Spy.Before("SendExportShortcut", 1, "IdentifySaveDialog", 1));
         Assert.True(fx.Spy.Before("IdentifySaveDialog", 1, "Configure", 1));
+    }
+
+    // ==================================================================
+    // F6.14B2.12C1 - Committer wired: prova a ordem final
+    // ReadBack -> CommitOnce -> WaitForStable -> Validate -> Publish, e
+    // que qualquer falha em qualquer estagio dessa cadeia nunca provoca
+    // uma segunda chamada de nada (zero retry).
+    // ==================================================================
+
+    // ---------- Q. CommitOnce FAIL -> zero watcher/validator/publisher ----------
+    [Fact]
+    public void Q_CommitOnceFalha_ZeroWatcherZeroValidatorZeroPublisher()
+    {
+        var fx = new OrchestratorFixture();
+        fx.Committer.Result = SaveDialogCommitResult.Fail(AgentErrorCode.DialogIdentityMismatch, "dialogo diferente na revalidacao final");
+
+        var result = fx.BuildOrchestrator().Run();
+
+        Assert.False(result.Success);
+        Assert.Equal(AgentStage.Failed, result.FinalStage);
+        Assert.Equal(AgentErrorCode.DialogIdentityMismatch, result.ErrorCode);
+        Assert.Equal(1, fx.Committer.CommitOnceCalls);
+        Assert.Equal(0, fx.Spy.CountOf("WaitForExpectedFileOnly"));
+        Assert.Equal(0, fx.Spy.CountOf("Validate"));
+        Assert.Equal(0, fx.Spy.CountOf("Publish"));
+    }
+
+    // ---------- R. CommitOnce PASS, watcher (IExportStageWatcher) FAIL -> CommitOnce continua 1, zero Validator/Publisher ----------
+    [Fact]
+    public void R_CommitOnceOkMasArquivoNuncaEstabiliza_CommitOnceContinuaUm_ZeroValidatorZeroPublisher()
+    {
+        var fx = new OrchestratorFixture();
+        fx.Watcher.WaitResult = ExportStageWatchResult.Fail(AgentErrorCode.FileUnstable, "timeout aguardando estabilidade");
+
+        var result = fx.BuildOrchestrator().Run();
+
+        Assert.False(result.Success);
+        Assert.Equal(1, fx.Committer.CommitOnceCalls); // nenhuma segunda tentativa de clique
+        Assert.Equal(0, fx.Spy.CountOf("Validate"));
+        Assert.Equal(0, fx.Spy.CountOf("Publish"));
+    }
+
+    // ---------- S. Watcher PASS, Reader FAIL -> zero Publisher ----------
+    [Fact]
+    public void S_ReaderRejeita_ZeroPublisher()
+    {
+        var fx = new OrchestratorFixture();
+        fx.ExportValidator.Result = ExportValidationResult.Fail(AgentErrorCode.ReaderRejected, "colunas_inesperadas");
+
+        var result = fx.BuildOrchestrator().Run();
+
+        Assert.False(result.Success);
+        Assert.Equal(1, fx.Committer.CommitOnceCalls);
+        Assert.Equal(1, fx.Spy.CountOf("Validate"));
+        Assert.Equal(0, fx.Spy.CountOf("Publish"));
+    }
+
+    // ---------- T. Cadeia inteira PASS -> exatamente 1 de cada ----------
+    [Fact]
+    public void T_CadeiaCompletaOk_ExatamenteUmaChamadaDeCadaEstagio()
+    {
+        var fx = new OrchestratorFixture();
+
+        var result = fx.BuildOrchestrator().Run();
+
+        Assert.True(result.Success);
+        Assert.Equal(1, fx.InputSender.SendExportShortcutCalls);
+        Assert.Equal(1, fx.Committer.CommitOnceCalls);
+        Assert.Equal(1, fx.Spy.CountOf("WaitForExpectedFileOnly"));
+        Assert.Equal(1, fx.Spy.CountOf("Validate"));
+        Assert.Equal(1, fx.Spy.CountOf("Publish"));
+    }
+
+    // ---------- U. Ordem objetiva completa ----------
+    [Fact]
+    public void U_OrdemObjetivaCompleta_ReadbackAntesDeCommitAntesDeWatcherAntesDeValidateAntesDePublish()
+    {
+        var fx = new OrchestratorFixture();
+
+        fx.BuildOrchestrator().Run();
+
+        Assert.True(fx.Spy.Before("ReadBack", 1, "CommitOnce", 1));
+        Assert.True(fx.Spy.Before("CommitOnce", 1, "WaitForExpectedFileOnly", 1));
+        Assert.True(fx.Spy.Before("WaitForExpectedFileOnly", 1, "Validate", 1));
+        Assert.True(fx.Spy.Before("Validate", 1, "Publish", 1));
+    }
+
+    // ---------- W. G13: EXPORT_STAGE nao vazia -> zero Shift+F5 ----------
+    [Fact]
+    public void W_StageNaoVazia_ZeroShiftF5_ZeroCommitOnce()
+    {
+        var fx = new OrchestratorFixture();
+        fx.Watcher.ConfirmEmptyResult = ExportStageWatchResult.Fail(AgentErrorCode.FileUnstable, "EXPORT_STAGE nao esta vazia");
+
+        var result = fx.BuildOrchestrator().Run();
+
+        Assert.False(result.Success);
+        Assert.Equal(AgentStage.Failed, result.FinalStage);
+        Assert.Equal(0, fx.InputSender.SendExportShortcutCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
+        Assert.Equal(1, fx.Watcher.ConfirmEmptyBeforeActionCalls);
+    }
+
+    // ---------- X. G13 PASS -> ConfirmEmptyBeforeAction antes do Shift+F5 ----------
+    [Fact]
+    public void X_StageVazia_ConfirmEmptyBeforeActionAntesDoShiftF5()
+    {
+        var fx = new OrchestratorFixture();
+
+        fx.BuildOrchestrator().Run();
+
+        Assert.Equal(1, fx.Watcher.ConfirmEmptyBeforeActionCalls);
+        Assert.True(fx.Spy.Before("ConfirmEmptyBeforeAction", 1, "SendExportShortcut", 1));
+    }
+
+    // ---------- V. CommitOnce recebe target e dialog corretos ----------
+    [Fact]
+    public void V_CommitOnceRecebeMesmoTargetEMesmoDialogJaValidados()
+    {
+        var fx = new OrchestratorFixture();
+        var identidadeEsperada = new NexAdminWindowIdentity(processId: 555, mainWindowHandle: 0x9999);
+        fx.NexWindowInspector.LocateResult = NexAdminLocateResult.Pass(identidadeEsperada);
+
+        fx.BuildOrchestrator().Run();
+
+        Assert.Equal(identidadeEsperada, fx.Committer.LastTargetReceived);
+        Assert.Equal(fx.SaveDialogInspector.IdentityResult.Dialog, fx.Committer.LastExpectedDialogReceived);
     }
 }

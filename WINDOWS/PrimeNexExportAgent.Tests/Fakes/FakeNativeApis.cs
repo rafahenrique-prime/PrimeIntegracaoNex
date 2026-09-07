@@ -60,6 +60,11 @@ public sealed class FakeNativeWindowApi : INativeWindowApi
     public string? GetClassName(nint hWnd) =>
         ClassNameByWindow.TryGetValue(hWnd, out var name) ? name : null;
 
+    public Dictionary<nint, string> TitleByWindow { get; } = new();
+
+    public string? GetWindowTitle(nint hWnd) =>
+        TitleByWindow.TryGetValue(hWnd, out var title) ? title : null;
+
     public IReadOnlyList<nint> GetVisibleTopLevelWindowsForProcess(int processId)
     {
         if (ThrowOnEnumerate is not null) throw ThrowOnEnumerate;

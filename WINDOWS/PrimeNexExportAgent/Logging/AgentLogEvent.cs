@@ -14,13 +14,21 @@ public sealed class AgentLogEvent
     public string? ErrorCode { get; }
     public string? FileName { get; }
 
-    public AgentLogEvent(DateTime timestamp, Guid runId, string stage, string? errorCode = null, string? fileName = null)
+    /// <summary>Motivo/diagnostico textual opcional (ex.: geometria
+    /// esperada/atual, HWND, contagem de amostras) - nunca payload de
+    /// negocio, so texto tecnico ja presente no Reason do Result que
+    /// falhou. Antes descartado silenciosamente pelo orquestrador;
+    /// agora preservado quando fornecido.</summary>
+    public string? Reason { get; }
+
+    public AgentLogEvent(DateTime timestamp, Guid runId, string stage, string? errorCode = null, string? fileName = null, string? reason = null)
     {
         Timestamp = timestamp;
         RunId = runId;
         Stage = stage;
         ErrorCode = errorCode;
         FileName = fileName;
+        Reason = reason;
     }
 }
 

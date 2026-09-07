@@ -59,7 +59,9 @@ internal static class SendExportShortcutOnceProbe
         Console.WriteLine();
         Console.WriteLine("Todos os gates PASS. Enviando SendExportShortcut(target) UMA vez...");
 
-        var inputSender = new WindowsInputSender(nativeWindows, new Win32InputNativeApi());
+        var inputNative = new Win32InputNativeApi();
+        var foregroundWaiter = new PollingForegroundWaiter(inputNative, new ThreadSleepDelay(), new SystemClock());
+        var inputSender = new WindowsInputSender(nativeWindows, inputNative, foregroundWaiter);
         try
         {
             inputSender.SendExportShortcut(target);

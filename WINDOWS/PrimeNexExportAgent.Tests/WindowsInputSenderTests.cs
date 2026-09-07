@@ -6,11 +6,17 @@ using Xunit;
 namespace PrimeNexExportAgent.Tests;
 
 /// <summary>
-/// Testes offline (F6.14B1) de WindowsInputSender - a implementacao REAL
-/// de IInputSender. ZERO Win32 real e tocado aqui: INativeWindowApi
-/// (revalidacao T1/T2) e IInputNativeApi (foreground/SendInput, T3/T4 e o
-/// input em si) sao ambos fakes puros. Cada cenario do PRE-INPUT TARGET
-/// GATE tem teste proprio.
+/// Testes offline (F6.14B1, corrigidos em F6.14B2.5) de WindowsInputSender -
+/// a implementacao REAL de IInputSender. ZERO Win32 real e tocado aqui:
+/// INativeWindowApi (T1/T2), IInputNativeApi (T4a/confirmacao final/input)
+/// e IForegroundWaiter (T4b) sao todos fakes puros.
+///
+/// F6.14B2.5 - T4 passou a ter duas partes: T4a (SetForegroundWindow,
+/// unico) + T4b (IForegroundWaiter.WaitForForeground - aqui um
+/// FakeForegroundWaiter simples, sem polling real - o polling de verdade e
+/// testado em ForegroundWaiterTests contra PollingForegroundWaiter). Depois
+/// do waiter, uma confirmacao FINAL direta via IInputNativeApi.
+/// GetForegroundWindow() acontece imediatamente antes do SendInput.
 /// </summary>
 public sealed class WindowsInputSenderTests
 {
@@ -20,7 +26,7 @@ public sealed class WindowsInputSenderTests
 
     private static NexAdminWindowIdentity ValidTarget => new(processId: TargetPid, mainWindowHandle: TargetHwnd);
 
-    private static (WindowsInputSender Sender, FakeNativeWindowApi Native, FakeInputNativeApi Input) BuildValidFixture()
+    private static (WindowsInputSender Sender, FakeNativeWindowApi Native, FakeInputNativeApi Input, FakeForegroundWaiter Waiter) BuildValidFixture()
     {
         var native = new FakeNativeWindowApi();
         native.ValidWindows.Add(TargetHwnd);
@@ -29,25 +35,28 @@ public sealed class WindowsInputSenderTests
         native.ClassNameByWindow[TargetHwnd] = ExpectedClassName;
 
         var input = new FakeInputNativeApi();
-        // Por padrao, ambas as confirmacoes de foreground retornam o
-        // proprio target (happy path) - testes especificos sobrescrevem.
-        input.GetForegroundWindowSequence.Enqueue(TargetHwnd);
+        // Confirmacao FINAL (unica leitura direta que resta em
+        // IInputNativeApi apos F6.14B2.5) - por padrao retorna o proprio
+        // target (happy path); testes especificos sobrescrevem.
         input.GetForegroundWindowSequence.Enqueue(TargetHwnd);
 
-        return (new WindowsInputSender(native, input), native, input);
+        var waiter = new FakeForegroundWaiter(); // Result=true por padrao (T4b passa)
+
+        return (new WindowsInputSender(native, input, waiter), native, input, waiter);
     }
 
-    // ---- A: HWND inexistente -> 0 foreground, 0 input ----
+    // ---- A: HWND inexistente -> 0 foreground, 0 waiter, 0 input ----
     [Fact]
     public void A_HwndInexistente_ZeroForegroundZeroInput()
     {
-        var (sender, native, input) = BuildValidFixture();
+        var (sender, native, input, waiter) = BuildValidFixture();
         native.ValidWindows.Remove(TargetHwnd);
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
 
         Assert.NotNull(exception);
         Assert.Equal(0, input.SetForegroundWindowCalls);
+        Assert.Equal(0, waiter.WaitForForegroundCalls);
         Assert.Equal(0, input.SendShiftF5Calls);
     }
 
@@ -55,13 +64,14 @@ public sealed class WindowsInputSenderTests
     [Fact]
     public void B_PidDiferente_ZeroForegroundZeroInput()
     {
-        var (sender, native, input) = BuildValidFixture();
+        var (sender, native, input, waiter) = BuildValidFixture();
         native.OwningProcessByWindow[TargetHwnd] = 9999;
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
 
         Assert.NotNull(exception);
         Assert.Equal(0, input.SetForegroundWindowCalls);
+        Assert.Equal(0, waiter.WaitForForegroundCalls);
         Assert.Equal(0, input.SendShiftF5Calls);
     }
 
@@ -69,13 +79,14 @@ public sealed class WindowsInputSenderTests
     [Fact]
     public void C_ClassNameDiferente_ZeroForegroundZeroInput()
     {
-        var (sender, native, input) = BuildValidFixture();
+        var (sender, native, input, waiter) = BuildValidFixture();
         native.ClassNameByWindow[TargetHwnd] = "OutraClasse";
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
 
         Assert.NotNull(exception);
         Assert.Equal(0, input.SetForegroundWindowCalls);
+        Assert.Equal(0, waiter.WaitForForegroundCalls);
         Assert.Equal(0, input.SendShiftF5Calls);
     }
 
@@ -83,89 +94,96 @@ public sealed class WindowsInputSenderTests
     [Fact]
     public void D_TargetInvisivel_ZeroForegroundZeroInput()
     {
-        var (sender, native, input) = BuildValidFixture();
+        var (sender, native, input, waiter) = BuildValidFixture();
         native.VisibleWindows.Remove(TargetHwnd);
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
 
         Assert.NotNull(exception);
         Assert.Equal(0, input.SetForegroundWindowCalls);
+        Assert.Equal(0, waiter.WaitForForegroundCalls);
         Assert.Equal(0, input.SendShiftF5Calls);
     }
 
-    // ---- E: SetForegroundWindow retorna false -> 1 tentativa, 0 input ----
+    // ---- E (ordem A): SetForegroundWindow retorna false -> fail imediato,
+    // waiter NUNCA chamado, 0 input ----
     [Fact]
-    public void E_SetForegroundWindowFalha_ExatamenteUmaTentativaZeroInput()
+    public void E_SetForegroundWindowFalha_WaiterNaoChamadoZeroInput()
     {
-        var (sender, _, input) = BuildValidFixture();
+        var (sender, _, input, waiter) = BuildValidFixture();
         input.SetForegroundWindowResult = false;
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
 
         Assert.NotNull(exception);
         Assert.Equal(1, input.SetForegroundWindowCalls);
+        Assert.Equal(0, waiter.WaitForForegroundCalls); // T4b nao roda se T4a falhou
         Assert.Equal(0, input.SendShiftF5Calls);
     }
 
-    // ---- F: SetForegroundWindow PASS mas GetForegroundWindow != target -> 0 input ----
+    // ---- F (ordem F/G): waiter (T4b) retorna false (timeout) -> 0 input,
+    // SetForegroundWindowCalls continua exatamente 1 (nunca uma 2a tentativa) ----
     [Fact]
-    public void F_ForegroundDivergenteNaPrimeiraConfirmacao_ZeroInput()
+    public void F_ForegroundWaiterRetornaFalse_SetForegroundWindowContinuaUm_ZeroInput()
     {
-        var (sender, _, input) = BuildValidFixture();
-        input.GetForegroundWindowSequence.Clear();
-        input.GetForegroundWindowSequence.Enqueue((nint)0x9999); // janela errada
+        var (sender, _, input, waiter) = BuildValidFixture();
+        waiter.Result = false; // simula timeout do PollingForegroundWaiter
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
 
         Assert.NotNull(exception);
-        Assert.Equal(1, input.SetForegroundWindowCalls);
-        Assert.Equal(0, input.SendShiftF5Calls);
+        Assert.Equal(1, input.SetForegroundWindowCalls); // G/F da ordem: nunca 2a tentativa
+        Assert.Equal(1, waiter.WaitForForegroundCalls);
+        Assert.Equal(0, input.SendShiftF5Calls); // G da ordem: SendInputCalls == 0
     }
 
-    // ---- G: 1a confirmacao PASS, 2a diverge -> 0 input ----
+    // ---- G (ordem J): waiter PASS, mas confirmacao FINAL diverge -> FAIL, 0 input ----
     [Fact]
-    public void G_SegundaConfirmacaoForegroundDiverge_ZeroInput()
+    public void G_WaiterPassMasConfirmacaoFinalDiverge_ZeroInput()
     {
-        var (sender, _, input) = BuildValidFixture();
+        var (sender, _, input, waiter) = BuildValidFixture();
+        waiter.Result = true;
         input.GetForegroundWindowSequence.Clear();
-        input.GetForegroundWindowSequence.Enqueue(TargetHwnd);       // 1a confirmacao: correta
-        input.GetForegroundWindowSequence.Enqueue((nint)0x8888);     // 2a confirmacao: mudou
+        input.GetForegroundWindowSequence.Enqueue((nint)0x8888); // confirmacao final: janela errada
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
 
         Assert.NotNull(exception);
-        Assert.Equal(2, input.GetForegroundWindowCalls);
+        Assert.Equal(1, waiter.WaitForForegroundCalls);
+        Assert.Equal(1, input.GetForegroundWindowCalls); // 1 unica confirmacao final direta
         Assert.Equal(0, input.SendShiftF5Calls);
     }
 
-    // ---- H: T1-T4 todos PASS -> SendShiftF5 exatamente 1 vez ----
+    // ---- H: T1-T4 todos PASS -> SendShiftF5 exatamente 1 vez (ordem K) ----
     [Fact]
     public void H_TodosOsGatesPassam_SendShiftF5ExatamenteUmaVez()
     {
-        var (sender, _, input) = BuildValidFixture();
+        var (sender, _, input, waiter) = BuildValidFixture();
 
         sender.SendExportShortcut(ValidTarget);
 
         Assert.Equal(1, input.SendShiftF5Calls);
         Assert.Equal(1, input.SetForegroundWindowCalls);
+        Assert.Equal(1, waiter.WaitForForegroundCalls);
     }
 
-    // ---- I: target recebido pelo input e exatamente o target validado ----
+    // ---- I: target recebido pelo foreground/waiter e exatamente o target validado ----
     [Fact]
-    public void I_TargetRecebidoPeloForeground_EExatamenteOTargetPassado()
+    public void I_TargetRecebidoPeloForegroundEWaiter_EExatamenteOTargetPassado()
     {
-        var (sender, _, input) = BuildValidFixture();
+        var (sender, _, input, waiter) = BuildValidFixture();
 
         sender.SendExportShortcut(ValidTarget);
 
         Assert.Equal(TargetHwnd, input.LastSetForegroundWindowTarget);
+        Assert.Equal(TargetHwnd, waiter.LastTargetReceived);
     }
 
     // ---- J: SendShiftF5 lanca -> FAILED, zero segunda chamada ----
     [Fact]
     public void J_SendShiftF5Lanca_PropagaExcecaoSemSegundaChamada()
     {
-        var (sender, _, input) = BuildValidFixture();
+        var (sender, _, input, waiter) = BuildValidFixture();
         input.ThrowOnSendShiftF5 = new InvalidOperationException("SendInput falhou (simulado)");
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
@@ -178,7 +196,7 @@ public sealed class WindowsInputSenderTests
     [Fact]
     public void K_SendInputRetornaQuantidadeDiferenteDeQuatro_Falha()
     {
-        var (sender, _, input) = BuildValidFixture();
+        var (sender, _, input, waiter) = BuildValidFixture();
         input.SendShiftF5Result = 2; // insercao parcial
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
@@ -191,12 +209,13 @@ public sealed class WindowsInputSenderTests
     [Fact]
     public void L_HappyPath_MaximoUmForegroundEUmInput()
     {
-        var (sender, _, input) = BuildValidFixture();
+        var (sender, _, input, waiter) = BuildValidFixture();
 
         var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
 
         Assert.Null(exception);
         Assert.Equal(1, input.SetForegroundWindowCalls);
+        Assert.Equal(1, waiter.WaitForForegroundCalls);
         Assert.Equal(1, input.SendShiftF5Calls);
     }
 }

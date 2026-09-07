@@ -17,9 +17,11 @@ public sealed class OrchestratorFixture
     public FakeSessionInspector SessionInspector { get; }
     public FakeNexWindowInspector NexWindowInspector { get; }
     public FakeInputSender InputSender { get; }
+    public FakeSaveDialogWaiter SaveDialogWaiter { get; }
     public FakeSaveDialogInspector SaveDialogInspector { get; }
     public FakeSaveDialogController SaveDialogController { get; }
-    public FakeFileStabilityChecker FileStabilityChecker { get; }
+    public FakeConfirmedSaveDialogCommitter Committer { get; }
+    public FakeExportStageWatcher Watcher { get; }
     public FakeExportValidator ExportValidator { get; }
     public FakeAtomicPublisher AtomicPublisher { get; }
     public FakeAgentLogger Logger { get; } = new();
@@ -34,8 +36,10 @@ public sealed class OrchestratorFixture
         NexWindowInspector = new FakeNexWindowInspector(Spy);
         InputSender = new FakeInputSender(Spy);
         SaveDialogInspector = new FakeSaveDialogInspector(Spy);
+        SaveDialogWaiter = new FakeSaveDialogWaiter(SaveDialogInspector);
         SaveDialogController = new FakeSaveDialogController(Spy);
-        FileStabilityChecker = new FakeFileStabilityChecker(Spy);
+        Committer = new FakeConfirmedSaveDialogCommitter(Spy);
+        Watcher = new FakeExportStageWatcher(Spy);
         ExportValidator = new FakeExportValidator(Spy);
         AtomicPublisher = new FakeAtomicPublisher(Spy);
     }
@@ -45,9 +49,11 @@ public sealed class OrchestratorFixture
         SessionInspector,
         NexWindowInspector,
         InputSender,
+        SaveDialogWaiter,
         SaveDialogInspector,
         SaveDialogController,
-        FileStabilityChecker,
+        Committer,
+        Watcher,
         ExportValidator,
         AtomicPublisher,
         Logger,

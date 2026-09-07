@@ -5,12 +5,23 @@ using PrimeNexExportAgent.WindowsNative;
 namespace PrimeNexExportAgent.WindowsInput;
 
 /// <summary>
-/// Implementacao REAL (F6.14B1) de IInputSender - a UNICA classe do
-/// projeto autorizada a enviar Shift+F5 de verdade. Executa o PRE-INPUT
-/// TARGET GATE (T1-T4, documentado no contrato IInputSender desde
-/// F6.13.4) IMEDIATAMENTE antes do foreground e imediatamente antes do
-/// input - nunca confia num estado observado segundos antes (ex.: o
-/// resultado de CheckSafeState, que e anterior no tempo).
+/// Implementacao REAL (F6.14B1, corrigida em F6.14B2.5) de IInputSender -
+/// a UNICA classe do projeto autorizada a enviar Shift+F5 de verdade.
+/// Executa o PRE-INPUT TARGET GATE (T1-T4, documentado desde F6.13.4)
+/// IMEDIATAMENTE antes do foreground e imediatamente antes do input -
+/// nunca confia num estado observado segundos antes.
+///
+/// F6.14B2.5 - CORRECAO POR EVIDENCIA REAL: um probe real mostrou
+/// SetForegroundWindow retornando sucesso (T3) seguido IMEDIATAMENTE por
+/// GetForegroundWindow() != target - ou seja, a troca de foreground do
+/// Windows nao e sincrona em relacao ao retorno de SetForegroundWindow.
+/// T4 passou a ter duas partes: T4a (o proprio SetForegroundWindow, unico)
+/// + T4b (IForegroundWaiter.WaitForForeground - polling READ-ONLY bounded
+/// do resultado dessa unica tentativa, NUNCA uma segunda chamada a
+/// SetForegroundWindow). Depois do waiter confirmar, uma ULTIMA leitura
+/// direta de GetForegroundWindow e feita imediatamente antes do SendInput,
+/// pois o foco ainda pode mudar entre o waiter confirmar e o input
+/// acontecer.
 ///
 /// Qualquer falha em qualquer gate lanca excecao - o orquestrador
 /// (ExportAgentOrchestrator) ja trata isso: captura, loga Failed, nunca
@@ -22,11 +33,13 @@ public sealed class WindowsInputSender : IInputSender
 
     private readonly INativeWindowApi _nativeWindows;
     private readonly IInputNativeApi _inputNative;
+    private readonly IForegroundWaiter _foregroundWaiter;
 
-    public WindowsInputSender(INativeWindowApi nativeWindows, IInputNativeApi inputNative)
+    public WindowsInputSender(INativeWindowApi nativeWindows, IInputNativeApi inputNative, IForegroundWaiter foregroundWaiter)
     {
         _nativeWindows = nativeWindows;
         _inputNative = inputNative;
+        _foregroundWaiter = foregroundWaiter;
     }
 
     public void SendExportShortcut(NexAdminWindowIdentity target)
@@ -55,24 +68,26 @@ public sealed class WindowsInputSender : IInputSender
             throw new InvalidOperationException("PRE-INPUT TARGET GATE T2 falhou: target nao esta mais visivel.");
         }
 
-        // ---- T3: foreground, EXATAMENTE 1 tentativa, nunca repetir ----
+        // ---- T4a: foreground, EXATAMENTE 1 tentativa, nunca repetir ----
         if (!_inputNative.SetForegroundWindow(target.MainWindowHandle))
         {
-            throw new InvalidOperationException("PRE-INPUT TARGET GATE T3 falhou: SetForegroundWindow retornou false.");
+            throw new InvalidOperationException("PRE-INPUT TARGET GATE T4a falhou: SetForegroundWindow retornou false.");
         }
 
-        // ---- T4: confirmar foreground == target (1a leitura) ----
-        if (_inputNative.GetForegroundWindow() != target.MainWindowHandle)
+        // ---- T4b (F6.14B2.5): espera bounded, read-only, pela troca de
+        // foreground refletir de fato - NUNCA uma segunda chamada a
+        // SetForegroundWindow (o waiter nao tem essa capacidade). ----
+        if (!_foregroundWaiter.WaitForForeground(target.MainWindowHandle))
         {
-            throw new InvalidOperationException("PRE-INPUT TARGET GATE T4 falhou: foreground nao e o target (1a confirmacao).");
+            throw new InvalidOperationException("PRE-INPUT TARGET GATE T4b falhou: foreground nao confirmou o target dentro do timeout.");
         }
 
-        // ---- T4 (repeticao imediatamente antes do input): o foco pode ter
-        // mudado entre a 1a confirmacao e agora - nunca confiar numa
-        // observacao de instantes atras. ----
+        // ---- Confirmacao FINAL, imediatamente antes do input (F6.14B2.5) -
+        // o foco pode ter mudado entre o waiter confirmar e agora. Nunca
+        // tenta recuperar foco, nunca repete SetForegroundWindow. ----
         if (_inputNative.GetForegroundWindow() != target.MainWindowHandle)
         {
-            throw new InvalidOperationException("PRE-INPUT TARGET GATE T4 falhou: foreground mudou imediatamente antes do input (2a confirmacao).");
+            throw new InvalidOperationException("PRE-INPUT TARGET GATE T4 falhou: foreground mudou imediatamente antes do input (confirmacao final).");
         }
 
         // ---- T1-T4 = PASS confirmado. Autorizado exatamente 1 SendInput

@@ -24,9 +24,11 @@ public sealed class ExportAgentOrchestrator
     private readonly ISessionInspector _sessionInspector;
     private readonly INexWindowInspector _nexWindowInspector;
     private readonly IInputSender _inputSender;
+    private readonly ISaveDialogWaiter _saveDialogWaiter;
     private readonly ISaveDialogInspector _saveDialogInspector;
     private readonly ISaveDialogController _saveDialogController;
-    private readonly IFileStabilityChecker _fileStabilityChecker;
+    private readonly IConfirmedSaveDialogCommitter _saveDialogCommitter;
+    private readonly IExportStageWatcher _exportStageWatcher;
     private readonly IExportValidator _exportValidator;
     private readonly IAtomicPublisher _atomicPublisher;
     private readonly IAgentLogger _logger;
@@ -35,16 +37,18 @@ public sealed class ExportAgentOrchestrator
     private readonly string _exportStagePath;
     private readonly string _exportadosPath;
     private readonly string _expectedFileType;
-    private readonly TimeSpan _fileStabilityTimeout;
+    private readonly TimeSpan _watcherTimeout;
 
     public ExportAgentOrchestrator(
         IExecutionLock @lock,
         ISessionInspector sessionInspector,
         INexWindowInspector nexWindowInspector,
         IInputSender inputSender,
+        ISaveDialogWaiter saveDialogWaiter,
         ISaveDialogInspector saveDialogInspector,
         ISaveDialogController saveDialogController,
-        IFileStabilityChecker fileStabilityChecker,
+        IConfirmedSaveDialogCommitter saveDialogCommitter,
+        IExportStageWatcher exportStageWatcher,
         IExportValidator exportValidator,
         IAtomicPublisher atomicPublisher,
         IAgentLogger logger,
@@ -52,15 +56,17 @@ public sealed class ExportAgentOrchestrator
         string exportStagePath,
         string exportadosPath,
         string expectedFileType = "Excel",
-        TimeSpan? fileStabilityTimeout = null)
+        TimeSpan? watcherTimeout = null)
     {
         _lock = @lock;
         _sessionInspector = sessionInspector;
         _nexWindowInspector = nexWindowInspector;
         _inputSender = inputSender;
+        _saveDialogWaiter = saveDialogWaiter;
         _saveDialogInspector = saveDialogInspector;
         _saveDialogController = saveDialogController;
-        _fileStabilityChecker = fileStabilityChecker;
+        _saveDialogCommitter = saveDialogCommitter;
+        _exportStageWatcher = exportStageWatcher;
         _exportValidator = exportValidator;
         _atomicPublisher = atomicPublisher;
         _logger = logger;
@@ -68,7 +74,7 @@ public sealed class ExportAgentOrchestrator
         _exportStagePath = exportStagePath;
         _exportadosPath = exportadosPath;
         _expectedFileType = expectedFileType;
-        _fileStabilityTimeout = fileStabilityTimeout ?? TimeSpan.FromSeconds(60);
+        _watcherTimeout = watcherTimeout ?? TimeSpan.FromSeconds(15);
     }
 
     public AgentRunResult Run()
@@ -132,8 +138,19 @@ public sealed class ExportAgentOrchestrator
                 }
                 Log(runId, AgentStage.SafeStateValidated);
 
+                // ---- G13: EXPORT_STAGE obrigatoriamente vazia ANTES de
+                // qualquer acao real (inclusive antes do Shift+F5) -
+                // fail-closed, nunca apagado automaticamente. Mesma regra ja
+                // homologada nos probes reais (F6.14B2.9A). ----
+                var emptyCheck = _exportStageWatcher.ConfirmEmptyBeforeAction(_exportStagePath);
+                if (!emptyCheck.Passed)
+                {
+                    Log(runId, AgentStage.Failed, emptyCheck.ErrorCode);
+                    return AgentRunResult.Stop(runId, AgentStage.Failed, emptyCheck.ErrorCode);
+                }
+
                 // ==================================================
-                // A PARTIR DAQUI: G1-G7 = PASS confirmado. Autorizado
+                // A PARTIR DAQUI: G1-G7+G13 = PASS confirmado. Autorizado
                 // exatamente 1 SendExportShortcut(), dirigido a MESMA
                 // `target` ja validada acima (nunca recalculada). Nenhum
                 // caminho de codigo abaixo pode chamar isto uma segunda vez.
@@ -152,8 +169,16 @@ public sealed class ExportAgentOrchestrator
                 }
                 Log(runId, AgentStage.ExportTriggered);
 
-                // ---- G8+G9: identidade do dialogo + controles ----
-                var identity = _saveDialogInspector.IdentifySaveDialog();
+                // ---- G8+G9: identidade do dialogo + controles - recebe a
+                // MESMA target ja validada, nunca redescoberta (F6.14B2).
+                // F6.14B2.4: usa WaitForSaveDialog (polling read-only
+                // bounded) em vez de uma unica checagem instantanea, pois a
+                // criacao da janela pelo Windows e assincrona em relacao ao
+                // Shift+F5 (evidencia real: race de tempo confirmada em
+                // F6.14B2.3). Isto NAO e retry de acao - SendExportShortcut
+                // ja foi chamado exatamente 1 vez, acima, e nao e chamado
+                // de novo em nenhuma iteracao do wait. ----
+                var identity = _saveDialogWaiter.WaitForSaveDialog(target);
                 if (!identity.Passed)
                 {
                     // NUNCA uma segunda chamada a SendExportShortcut() -
@@ -164,13 +189,15 @@ public sealed class ExportAgentOrchestrator
                 Log(runId, AgentStage.SaveDialogIdentified);
                 Log(runId, AgentStage.SaveControlsValidated, fileName: null);
 
+                var dialog = identity.Dialog!;
+
                 // ---- Configuracao (escrita, ainda NAO confiada) ----
                 var fileName = FileNaming.GerarNomeArquivoVendas(_clock);
-                _saveDialogController.Configure(_exportStagePath, fileName, _expectedFileType);
+                _saveDialogController.Configure(dialog, _exportStagePath, fileName, _expectedFileType);
                 Log(runId, AgentStage.SaveDialogConfigured, fileName: fileName);
 
                 // ---- G10-G12: releitura (nunca reaproveita o valor escrito) ----
-                var readback = _saveDialogInspector.ReadBack(_exportStagePath, fileName, _expectedFileType);
+                var readback = _saveDialogInspector.ReadBack(dialog, _exportStagePath, fileName, _expectedFileType);
                 if (!readback.Passed)
                 {
                     // Fail-closed: NUNCA ClickSave() sem readback positivo.
@@ -181,24 +208,31 @@ public sealed class ExportAgentOrchestrator
 
                 // ==================================================
                 // A PARTIR DAQUI: G8-G12 = PASS confirmado. Autorizado
-                // exatamente 1 ClickSave().
+                // exatamente 1 CommitOnce() (F6.14B2.12C1) - NUNCA
+                // ISaveDialogController.ClickSave() generico, que permanece
+                // bloqueado (NotSupportedException) permanentemente.
+                // CommitOnce() reidentifica o dialogo do zero e exige o
+                // MESMO HWND antes de despachar BM_CLICK - Dispatched=true
+                // significa somente "clique despachado", nunca "arquivo
+                // salvo" (essa prova continua vindo do IExportStageWatcher
+                // logo abaixo).
                 // ==================================================
-                try
+                var commit = _saveDialogCommitter.CommitOnce(target, dialog);
+                if (!commit.Dispatched)
                 {
-                    _saveDialogController.ClickSave();
-                }
-                catch (Exception ex)
-                {
-                    TryLog(runId, AgentStage.Failed, AgentErrorCode.UnexpectedException, reason: ex.Message);
-                    return AgentRunResult.Stop(runId, AgentStage.Failed, AgentErrorCode.UnexpectedException);
+                    Log(runId, AgentStage.Failed, commit.ErrorCode, fileName: fileName);
+                    return AgentRunResult.Stop(runId, AgentStage.Failed, commit.ErrorCode);
                 }
                 Log(runId, AgentStage.FileSaveTriggered, fileName: fileName);
 
                 var stagedFilePath = Path.Combine(_exportStagePath, fileName);
 
-                // ---- Estabilidade ----
-                var stability = _fileStabilityChecker.WaitForStable(stagedFilePath, _fileStabilityTimeout);
-                if (!stability.Stable)
+                // ---- Estabilidade: mesmo componente real ja homologado nos
+                // probes (F6.14B2.9F) - unico arquivo esperado, tolera
+                // SOMENTE o transitorio <basename>.csv, fail-closed para
+                // qualquer outro nome/quantidade. ----
+                var stability = _exportStageWatcher.WaitForExpectedFileOnly(_exportStagePath, fileName, _watcherTimeout);
+                if (!stability.Passed)
                 {
                     Log(runId, AgentStage.Failed, stability.ErrorCode, fileName: fileName);
                     return AgentRunResult.Stop(runId, AgentStage.Failed, stability.ErrorCode);

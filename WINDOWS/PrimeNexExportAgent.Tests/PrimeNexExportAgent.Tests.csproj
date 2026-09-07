@@ -24,4 +24,15 @@
     <ProjectReference Include="..\PrimeNexExportAgent\PrimeNexExportAgent.csproj" />
   </ItemGroup>
 
+  <!--
+    F6.14B2.10A: fixture XLS SINTETICA (dados inventados, sem PII) usada
+    exclusivamente pelo teste de integracao controlado
+    (NodeExportValidatorIntegrationTests) que chama o CLI Node real
+    (SCRIPTS/validar-export-vendas.js) - nunca EXPORTADOS/EXPORT_STAGE
+    operacionais.
+  -->
+  <ItemGroup>
+    <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
