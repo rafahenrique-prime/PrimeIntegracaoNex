@@ -106,6 +106,17 @@ if (PrimeNexExportAgent.Diagnostics.RunOnceOperationalEntrypoint.IsOperationalFl
     return;
 }
 
+// V1 (extrato individual por cliente) - probe supervisionado one-shot,
+// mesmo padrao dos demais --diagnostic-* acima. NUNCA alcancavel sem o
+// argumento exato "--diagnostic-individual-statement-once" seguido do
+// codigo do cliente (e opcionalmente o nome esperado) - nunca hardcoded
+// em producao, nunca disparado pelo modo default deste executavel.
+if (PrimeNexExportAgent.Diagnostics.IndividualStatementOnceProbe.IsProbeFlag(args))
+{
+    PrimeNexExportAgent.Diagnostics.IndividualStatementOnceProbe.Run(args);
+    return;
+}
+
 Console.WriteLine("PRIME NEX EXPORT AGENT - F6.14B2.10B1. Sem argumento reconhecido, ZERO acao foi executada.");
 Console.WriteLine("Use --inspect-readonly para uma inspecao somente-leitura.");
 Console.WriteLine("Use --diagnostic-send-export-shortcut-once para o probe supervisionado de Shift+F5 (PODE enviar tecla real).");
@@ -116,3 +127,4 @@ Console.WriteLine("Use --diagnostic-publish-isolated <caminho.xls dentro de OUTP
 Console.WriteLine("Use --diagnostic-mutex-hold <nomeDoMutex> <holdMs> para o helper de teste de concorrencia real entre processos do Win32ExecutionLock - zero NEX/UI/publicacao, so um Mutex nomeado.");
 Console.WriteLine("Use --diagnostic-confirmed-save-committer-once para o probe supervisionado que homologa o WindowsConfirmedSaveDialogCommitter real (PODE enviar Shift+F5 real e clicar Salvar via Committer exatamente 1 vez) - para em EXPORT_STAGE, NUNCA avanca para Validator/Publisher/EXPORTADOS. So execute sob o ritual BEFORE/AFTER.");
 Console.WriteLine("Use --run-once-operational para o ENTRYPOINT OPERACIONAL REAL (gates -> Shift+F5 -> SaveDialog -> CommitOnce -> Watcher -> Validate -> Publish -> EXPORTADOS), UMA execucao completa. AINDA NAO AUTORIZADO PARA GO-LIVE - requer ritual BEFORE/autorizacao explicita antes do primeiro uso real.");
+Console.WriteLine("Use --diagnostic-individual-statement-once <codigoCliente> <nomeEsperado> (ambos obrigatorios) para o probe supervisionado one-shot da V1 (extrato individual por cliente): gates -> busca+F2 -> Transacoes -> '...' -> Exportar -> SaveDialog -> CommitOnce -> Watcher -> Validate -> Publish -> EXPORTADOS. PODE enviar F2 real, abrir a aba Transacoes, abrir o menu de overflow, acionar Exportar via MSAA, e escrever/clicar no dialogo Salvar Como. AINDA NAO AUTORIZADO PARA EXECUCAO REAL - requer ritual BEFORE/autorizacao explicita antes do primeiro uso.");

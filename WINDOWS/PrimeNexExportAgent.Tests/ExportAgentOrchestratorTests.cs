@@ -351,6 +351,13 @@ public sealed class ExportAgentOrchestratorTests
             "ExportTriggered", "SaveDialogIdentified", "SaveControlsValidated", "SaveDialogConfigured",
             "SaveDialogReadbackValidated", "FileSaveTriggered", "FileStable", "ReaderValidated",
             "Published", "Success",
+            // V1 (extrato individual por cliente) - estagios NOVOS do fluxo
+            // de IndividualStatementExportOrchestrator, inseridos no MESMO
+            // enum compartilhado (AgentStage) por decisao de design (ver
+            // plano aprovado). Nao alteram nenhum comportamento do
+            // pipeline de Vendas - ExportAgentOrchestrator nunca emite
+            // nenhum destes 3 estagios.
+            "ClientOpened", "TransactionsTabActive", "OverflowMenuOpened",
             "Failed", "SkippedBusy", "SkippedSessionUnavailable", "NexNotFound", "UnsafeState",
         };
 

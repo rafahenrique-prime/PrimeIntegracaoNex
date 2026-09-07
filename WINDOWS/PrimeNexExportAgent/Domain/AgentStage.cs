@@ -25,6 +25,14 @@ public enum AgentStage
     Published,
     Success,
 
+    // Estagios NOVOS do fluxo de extrato individual por cliente (V1) -
+    // inseridos entre SafeStateValidated e ExportTriggered, nunca
+    // reordenam nem substituem os estagios ja existentes do pipeline de
+    // Vendas.
+    ClientOpened,
+    TransactionsTabActive,
+    OverflowMenuOpened,
+
     // Terminais de falha/skip - NUNCA tem transicao de saida.
     Failed,
     SkippedBusy,

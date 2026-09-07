@@ -72,6 +72,13 @@ public interface INexWindowInspector
     /// <summary>Recebe a MESMA identidade ja retornada por LocateNexAdmin -
     /// nunca localiza "algum NexAdmin" de novo por conta propria (F6.13.4).</summary>
     NexWindowCheckResult CheckSafeState(NexAdminWindowIdentity target);
+
+    /// <summary>Variante de CheckSafeState para o fluxo de extrato
+    /// individual por cliente (V1) - mesma topologia base (janela unica,
+    /// nenhum modal financeiro), mas SEM exigir as abas Vendas/Historico
+    /// (o fluxo comeca na tela Clientes, nao em Vendas). Recebe a MESMA
+    /// identidade ja localizada, nunca redescoberta.</summary>
+    NexWindowCheckResult CheckSafeStateForClientNavigation(NexAdminWindowIdentity target);
 }
 
 /// <summary>G8+G9 (identidade do dialogo "Salvar como" e presenca dos 5
@@ -285,6 +292,57 @@ public interface IConfirmedSaveDialogCommitter
 /// e, so depois do read-back (G10-G12) confirmar, clica Salvar. Tambem
 /// permite Cancelar, mas somente com a identidade do dialogo reconfirmada
 /// (F6.12 secao 16).</summary>
+// -------------------- V1: extrato individual por cliente --------------------
+// Componentes NOVOS deste fluxo (nao usados pelo pipeline de Vendas, que
+// permanece inalterado). Mesma disciplina de ACAO das interfaces acima:
+// no maximo 1 acao mutante por chamada, sempre reacquire fresco, nunca
+// retry.
+
+/// <summary>Navega Clientes -> abre um cliente especifico (F2) -> ativa a
+/// aba Transacoes. Substitui o papel de IInputSender no fluxo de Vendas,
+/// mas expoe 2 estagios distintos (cada um com seu proprio gate
+/// fail-closed) em vez de 1 acao unica.</summary>
+public interface INexClientNavigator
+{
+    /// <summary>Localiza a tela Clientes, escreve `navigationTarget.ClientCode`
+    /// no campo de busca (WM_SETTEXT + readback), envia F2 exatamente uma
+    /// vez, aguarda a TFrmCadCli aparecer (polling bounded, nunca retry
+    /// do F2) e valida a identidade pos-abertura: Codigo sempre exigido
+    /// exato; Nome exigido exato quando `ExpectedClientName` foi
+    /// fornecido, ou capturado (nunca adivinhado) quando nao foi. So
+    /// retorna Pass com a OpenedClientIdentity quando tudo isso bater.</summary>
+    ClientOpenResult OpenClientByCode(NexAdminWindowIdentity target, ClientNavigationTarget navigationTarget);
+
+    /// <summary>Recebe a MESMA OpenedClientIdentity ja retornada por
+    /// OpenClientByCode (nunca redescobre o cliente). Reencontra o HWND
+    /// nativo da aba "Transacoes" fresco, despacha PostMessage
+    /// WM_LBUTTONDOWN/WM_LBUTTONUP exatamente uma vez no centro da propria
+    /// area cliente, e so retorna Pass se os 5 indicadores estruturais da
+    /// pagina Transacoes aparecerem E a identidade (Codigo + Nome de
+    /// `client`) permanecer identica.</summary>
+    TransactionsTabResult OpenTransactionsTab(NexAdminWindowIdentity target, OpenedClientIdentity client);
+}
+
+/// <summary>Abre o menu de overflow ("...") da aba Transacoes ja ativa.
+/// Usa um ponto de tela fisico pre-calibrado (NexOverflowButtonProfile),
+/// valido SOMENTE enquanto a geometria da TFrmCadCli bater exatamente com
+/// a calibracao - fora disso, falha fechado (OverflowGeometryMismatch),
+/// nunca escala/recalcula.</summary>
+public interface INexOverflowMenuOpener
+{
+    OverflowMenuResult OpenOverflowMenu(NexAdminWindowIdentity target, OpenedClientIdentity client);
+}
+
+/// <summary>Aciona "Exportar lista de transacoes" no popup ja aberto e
+/// validado por INexOverflowMenuOpener. SEMPRE reencontra o popup e o
+/// item MSAA do zero (nunca reaproveita um objeto MSAA de uma chamada
+/// anterior - OverflowMenuResult nao carrega nenhum) antes de chamar
+/// accDoDefaultAction exatamente uma vez.</summary>
+public interface INexExportTrigger
+{
+    ExportTriggerResult TriggerExport(NexAdminWindowIdentity target, OverflowMenuResult overflow);
+}
+
 public interface ISaveDialogController
 {
     /// <summary>Recebe a MESMA SaveDialogIdentity ja retornada por

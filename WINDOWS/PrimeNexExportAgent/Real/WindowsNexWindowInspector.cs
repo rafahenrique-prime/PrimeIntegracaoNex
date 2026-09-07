@@ -123,6 +123,55 @@ public sealed class WindowsNexWindowInspector : INexWindowInspector
 
     public NexWindowCheckResult CheckSafeState(NexAdminWindowIdentity target)
     {
+        var topology = CheckTopologySafeState(target);
+        if (!topology.Passed) return topology;
+
+        // ---- G4: aba "Vendas" presente (leitura, nunca Invoke/Select) ----
+        bool vendasPresente;
+        try
+        {
+            vendasPresente = _uiAutomation.HasElementNamed(target.MainWindowHandle, VendasTabName);
+        }
+        catch (Exception ex)
+        {
+            return NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, $"erro ao consultar UI Automation (Vendas): {ex.Message}");
+        }
+
+        if (!vendasPresente)
+        {
+            return NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, "aba 'Vendas' nao encontrada na arvore de UI Automation");
+        }
+
+        // ---- G5: aba "Historico" presente E visivel (IsOffscreen=False) ----
+        bool historicoVisivel;
+        try
+        {
+            historicoVisivel = _uiAutomation.HasVisibleElementNamed(target.MainWindowHandle, HistoricoTabName);
+        }
+        catch (Exception ex)
+        {
+            return NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, $"erro ao consultar UI Automation (Historico): {ex.Message}");
+        }
+
+        if (!historicoVisivel)
+        {
+            return NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, "aba 'Historico' ausente ou offscreen");
+        }
+
+        return NexWindowCheckResult.Pass();
+    }
+
+    /// <summary>V1 - extrato individual por cliente: mesma topologia base
+    /// (janela unica, nenhuma janela top-level desconhecida), mas SEM
+    /// exigir Vendas/Historico - o fluxo de cliente comeca na tela
+    /// Clientes, nunca em Vendas. Menor diff possivel: reaproveita
+    /// CheckTopologySafeState (extraido de CheckSafeState acima) em vez
+    /// de duplicar a logica de classificacao de janelas.</summary>
+    public NexWindowCheckResult CheckSafeStateForClientNavigation(NexAdminWindowIdentity target) =>
+        CheckTopologySafeState(target);
+
+    private NexWindowCheckResult CheckTopologySafeState(NexAdminWindowIdentity target)
+    {
         // Revalidacao imediata (F6.14A secao 7) - nunca confia no resultado
         // de LocateNexAdmin como permanente; o HWND pode ter sido fechado
         // ou mudado de estado entre uma chamada e outra.
@@ -210,38 +259,6 @@ public sealed class WindowsNexWindowInspector : INexWindowInspector
         if (intercomCount > 1)
         {
             return NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, $"mais de 1 TfrmIntercom/Atendimento reconhecido ({intercomCount}) - ambiguidade");
-        }
-
-        // ---- G4: aba "Vendas" presente (leitura, nunca Invoke/Select) ----
-        bool vendasPresente;
-        try
-        {
-            vendasPresente = _uiAutomation.HasElementNamed(target.MainWindowHandle, VendasTabName);
-        }
-        catch (Exception ex)
-        {
-            return NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, $"erro ao consultar UI Automation (Vendas): {ex.Message}");
-        }
-
-        if (!vendasPresente)
-        {
-            return NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, "aba 'Vendas' nao encontrada na arvore de UI Automation");
-        }
-
-        // ---- G5: aba "Historico" presente E visivel (IsOffscreen=False) ----
-        bool historicoVisivel;
-        try
-        {
-            historicoVisivel = _uiAutomation.HasVisibleElementNamed(target.MainWindowHandle, HistoricoTabName);
-        }
-        catch (Exception ex)
-        {
-            return NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, $"erro ao consultar UI Automation (Historico): {ex.Message}");
-        }
-
-        if (!historicoVisivel)
-        {
-            return NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, "aba 'Historico' ausente ou offscreen");
         }
 
         return NexWindowCheckResult.Pass();

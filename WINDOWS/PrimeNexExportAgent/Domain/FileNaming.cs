@@ -16,4 +16,14 @@ public static class FileNaming
         var now = clock.Now;
         return $"vendas-auto-{now:yyyyMMdd-HHmmss}.xls";
     }
+
+    /// <summary>Nome de arquivo para o extrato individual de transacoes de
+    /// um cliente (V1 do fluxo de navegacao por cliente). Mesma disciplina
+    /// de GerarNomeArquivoVendas - funcao pura, sempre unica por timestamp,
+    /// nunca reaproveita nome pre-preenchido pelo dialogo.</summary>
+    public static string GerarNomeArquivoExtratoIndividual(string clientCode, IClock clock)
+    {
+        var now = clock.Now;
+        return $"extrato-cliente-{clientCode}-{now:yyyyMMdd-HHmmss}.xls";
+    }
 }

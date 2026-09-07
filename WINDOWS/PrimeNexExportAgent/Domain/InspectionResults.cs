@@ -292,6 +292,110 @@ public sealed class SaveDialogCommitResult
         new(false, errorCode, reason);
 }
 
+/// Resultado de INexClientNavigator.OpenClientByCode() - V1 do fluxo de
+/// extrato individual por cliente. So retorna a OpenedClientIdentity
+/// quando F2 abriu exatamente 1 TFrmCadCli E a identidade pos-abertura
+/// (Codigo sempre, Nome quando esperado) bateu exatamente.
+public sealed class ClientOpenResult
+{
+    public bool Passed { get; }
+    public AgentErrorCode ErrorCode { get; }
+    public string Reason { get; }
+    public OpenedClientIdentity? Client { get; }
+
+    private ClientOpenResult(bool passed, AgentErrorCode errorCode, string reason, OpenedClientIdentity? client)
+    {
+        Passed = passed;
+        ErrorCode = errorCode;
+        Reason = reason;
+        Client = client;
+    }
+
+    public static ClientOpenResult Pass(OpenedClientIdentity client) =>
+        new(true, AgentErrorCode.None, string.Empty, client);
+
+    public static ClientOpenResult Fail(AgentErrorCode errorCode, string reason) =>
+        new(false, errorCode, reason, null);
+}
+
+/// Resultado de INexClientNavigator.OpenTransactionsTab() - PASS somente
+/// se o PostMessage DOWN/UP foi despachado, os 5 indicadores estruturais
+/// da aba Transacoes apareceram, E a identidade do cliente (Codigo +
+/// Nome ja confirmados/capturados em OpenedClientIdentity) permaneceu
+/// identica apos a troca de aba.
+public sealed class TransactionsTabResult
+{
+    public bool Passed { get; }
+    public AgentErrorCode ErrorCode { get; }
+    public string Reason { get; }
+
+    private TransactionsTabResult(bool passed, AgentErrorCode errorCode, string reason)
+    {
+        Passed = passed;
+        ErrorCode = errorCode;
+        Reason = reason;
+    }
+
+    public static TransactionsTabResult Pass() => new(true, AgentErrorCode.None, string.Empty);
+
+    public static TransactionsTabResult Fail(AgentErrorCode errorCode, string reason) =>
+        new(false, errorCode, reason);
+}
+
+/// Resultado de INexOverflowMenuOpener.OpenOverflowMenu() - carrega
+/// APENAS dados imutaveis e re-verificaveis do popup (owner class/title).
+/// NUNCA carrega um objeto IAccessible/COM vivo entre chamadas - qualquer
+/// referencia MSAA e' sempre reobtida do zero por quem precisar dela
+/// (INexExportTrigger), nunca transportada por este tipo.
+public sealed class OverflowMenuResult
+{
+    public bool Passed { get; }
+    public AgentErrorCode ErrorCode { get; }
+    public string Reason { get; }
+    public string? PopupOwnerClass { get; }
+    public string? PopupOwnerTitle { get; }
+
+    private OverflowMenuResult(bool passed, AgentErrorCode errorCode, string reason, string? popupOwnerClass, string? popupOwnerTitle)
+    {
+        Passed = passed;
+        ErrorCode = errorCode;
+        Reason = reason;
+        PopupOwnerClass = popupOwnerClass;
+        PopupOwnerTitle = popupOwnerTitle;
+    }
+
+    public static OverflowMenuResult Pass(string popupOwnerClass, string popupOwnerTitle) =>
+        new(true, AgentErrorCode.None, string.Empty, popupOwnerClass, popupOwnerTitle);
+
+    public static OverflowMenuResult Fail(AgentErrorCode errorCode, string reason) =>
+        new(false, errorCode, reason, null, null);
+}
+
+/// Resultado de INexExportTrigger.TriggerExport() - Dispatched=true
+/// significa SOMENTE que accDoDefaultAction foi despachado exatamente 1
+/// vez no item "Exportar lista de transacoes" recem-revalidado. NUNCA
+/// significa "Save Dialog abriu" - essa prova continua vindo de
+/// ISaveDialogWaiter, depois, no mesmo espirito de
+/// SaveDialogCommitResult.
+public sealed class ExportTriggerResult
+{
+    public bool Dispatched { get; }
+    public AgentErrorCode ErrorCode { get; }
+    public string Reason { get; }
+
+    private ExportTriggerResult(bool dispatched, AgentErrorCode errorCode, string reason)
+    {
+        Dispatched = dispatched;
+        ErrorCode = errorCode;
+        Reason = reason;
+    }
+
+    public static ExportTriggerResult Pass() => new(true, AgentErrorCode.None, string.Empty);
+
+    public static ExportTriggerResult Fail(AgentErrorCode errorCode, string reason) =>
+        new(false, errorCode, reason);
+}
+
 /// Resultado da publicacao atomica (move EXPORT_STAGE -> EXPORTADOS).
 public sealed class PublishResult
 {
