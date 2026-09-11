@@ -71,7 +71,55 @@ public sealed class FakeNativeWindowApi : INativeWindowApi
         return TopLevelWindowsByProcess.TryGetValue(processId, out var list) ? list : Array.Empty<nint>();
     }
 
+    /// <summary>Scheduler V2 - control ID por HWND. Ausente = 0 (sem ID).</summary>
+    public Dictionary<nint, int> ControlIdByWindow { get; } = new();
+
+    /// <summary>Scheduler V2 - habilitados por HWND (IsWindowEnabled).</summary>
+    public HashSet<nint> EnabledWindows { get; } = new();
+
+    /// <summary>Scheduler V2 - GetParent(hWnd) real por HWND. Ausente = 0.</summary>
+    public Dictionary<nint, nint> ParentByWindow { get; } = new();
+
+    /// <summary>Scheduler V2 - subarvore inteira (EnumChildWindows) por HWND pai.</summary>
+    public Dictionary<nint, IReadOnlyList<nint>> AllDescendantsByWindow { get; } = new();
+
+    /// <summary>Scheduler V2 - filhos IMEDIATOS em ordem Z por HWND pai.</summary>
+    public Dictionary<nint, IReadOnlyList<nint>> ImmediateChildrenInZOrderByWindow { get; } = new();
+
+    public int GetControlId(nint hWnd) => ControlIdByWindow.TryGetValue(hWnd, out var id) ? id : 0;
+
+    public bool IsWindowCurrentlyEnabled(nint hWnd) => EnabledWindows.Contains(hWnd);
+
+    public nint GetParentWindow(nint hWnd) => ParentByWindow.TryGetValue(hWnd, out var parent) ? parent : 0;
+
+    public IReadOnlyList<nint> GetAllDescendants(nint hWndParent) =>
+        AllDescendantsByWindow.TryGetValue(hWndParent, out var list) ? list : Array.Empty<nint>();
+
+    public IReadOnlyList<nint> GetImmediateChildrenInZOrder(nint hWndParent) =>
+        ImmediateChildrenInZOrderByWindow.TryGetValue(hWndParent, out var list) ? list : Array.Empty<nint>();
+
     public nint GetOwner(nint hWnd) => OwnerByWindow.TryGetValue(hWnd, out var owner) ? owner : 0;
+
+    /// <summary>Hybrid V3 - HWNDs minimizados (IsIconic=true) por HWND. Ausente = false.</summary>
+    public HashSet<nint> MinimizedWindows { get; } = new();
+
+    /// <summary>Hybrid V3 - TODAS as janelas top-level por PID, SEM filtro
+    /// de visibilidade (distinto de TopLevelWindowsByProcess, que so'
+    /// devolve visiveis).</summary>
+    public Dictionary<int, IReadOnlyList<nint>> AllTopLevelWindowsByProcess { get; } = new();
+
+    public bool IsWindowMinimized(nint hWnd) => MinimizedWindows.Contains(hWnd);
+
+    /// <summary>Hybrid V3 - se definido, GetAllTopLevelWindowsForProcess lanca
+    /// esta excecao (simula erro de enumeracao) em vez de consultar o
+    /// dicionario abaixo.</summary>
+    public Exception? ThrowOnGetAllTopLevelWindowsForProcess { get; set; }
+
+    public IReadOnlyList<nint> GetAllTopLevelWindowsForProcess(int processId)
+    {
+        if (ThrowOnGetAllTopLevelWindowsForProcess is not null) throw ThrowOnGetAllTopLevelWindowsForProcess;
+        return AllTopLevelWindowsByProcess.TryGetValue(processId, out var list) ? list : Array.Empty<nint>();
+    }
 
     public bool TryGetWindowRect(nint hWnd, out int width, out int height)
     {

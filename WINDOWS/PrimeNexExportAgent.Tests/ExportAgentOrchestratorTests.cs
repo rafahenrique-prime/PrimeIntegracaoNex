@@ -293,6 +293,98 @@ public sealed class ExportAgentOrchestratorTests
         Assert.Equal(0, fx.Committer.CommitOnceCalls);
     }
 
+    // ---------- N1. Correcao de observabilidade: Log() nao descarta mais `reason` ----------
+    // Antes da correcao, o metodo privado Log() recebia `reason` mas nunca o
+    // repassava ao AgentLogEvent - qualquer TryLog(..., reason: ex.Message)
+    // virava "reason": null no evento final. Achado real de um incidente
+    // (UnexpectedException em SendExportShortcut cujo ex.Message nunca
+    // apareceu no log).
+    [Fact]
+    public void N1_ExcecaoAoEnviarAtalho_ReasonComMensagemDaExcecaoPreservado()
+    {
+        var fx = new OrchestratorFixture();
+        fx.InputSender.ThrowOnSend = new InvalidOperationException("SendInput falhou (simulado)");
+
+        fx.BuildOrchestrator().Run();
+
+        var failedEvent = fx.Logger.Events.Last();
+        Assert.Equal(nameof(AgentStage.Failed), failedEvent.Stage);
+        Assert.Equal(nameof(AgentErrorCode.UnexpectedException), failedEvent.ErrorCode);
+        Assert.Equal("SendInput falhou (simulado)", failedEvent.Reason);
+        // Zero segunda tentativa de SendExportShortcut - a excecao no catch
+        // nunca reintroduz a acao, so afeta o que e' logado.
+        Assert.Equal(1, fx.InputSender.SendExportShortcutCalls);
+    }
+
+    // ---------- N1b. reason ausente continua null (nenhuma regressao) ----------
+    [Fact]
+    public void N1b_LogSemReasonExplicito_EventoContinuaComReasonNulo()
+    {
+        var fx = new OrchestratorFixture();
+        fx.NexWindowInspector.SafeStateResult = NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, "mais de 1 janela top-level");
+
+        fx.BuildOrchestrator().Run();
+
+        // O call-site de UnsafeState (fora do escopo desta correcao) nunca
+        // passou `reason` para Log() - deve continuar null, nao regredir
+        // para alguma string vazia ou lancar.
+        var failedEvent = fx.Logger.Events.Last();
+        Assert.Equal(nameof(AgentStage.UnsafeState), failedEvent.Stage);
+        Assert.Null(failedEvent.Reason);
+    }
+
+    // ---------- N0. NotForegroundException -> SkippedNotForeground (modo scheduled-safe) ----------
+    // Simula, via FakeInputSender.ThrowOnSend, o que
+    // WindowsScheduledSafeInputSender lanca quando o NexAdmin nao esta em
+    // primeiro plano. O sender manual (WindowsInputSender/FakeInputSender
+    // no caminho normal) nunca lanca este tipo - este catch especifico
+    // nunca dispara para nenhum outro cenario ja testado.
+    [Fact]
+    public void N0_NotForegroundException_SkippedNotForegroundComReasonELockLiberado()
+    {
+        var fx = new OrchestratorFixture();
+        fx.InputSender.ThrowOnSend = new NotForegroundException("SCHEDULED-SAFE GATE T3 falhou: NexAdmin nao esta em primeiro plano - nenhuma tentativa de forcar foco.");
+
+        var result = fx.BuildOrchestrator().Run();
+
+        Assert.False(result.Success);
+        Assert.Equal(AgentStage.SkippedNotForeground, result.FinalStage);
+        Assert.Equal(AgentErrorCode.NotForeground, result.ErrorCode);
+        Assert.Equal(1, fx.Lock.ReleaseCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
+
+        var loggedEvent = fx.Logger.Events.Last();
+        Assert.Equal(nameof(AgentStage.SkippedNotForeground), loggedEvent.Stage);
+        Assert.Equal(nameof(AgentErrorCode.NotForeground), loggedEvent.ErrorCode);
+        Assert.Contains("NexAdmin nao esta em primeiro plano", loggedEvent.Reason);
+    }
+
+    // ---------- N1. BackgroundSafeSkipException -> UnsafeState (Scheduler V2) ----------
+    // Simula, via FakeInputSender.ThrowOnSend, o que
+    // WindowsBackgroundExportTrigger lanca quando um gate de estado
+    // operacional seguro (NEX foreground/abridor/"Todas vendas") nao foi
+    // satisfeito ANTES do WM_COMMAND. Reaproveita AgentStage.UnsafeState
+    // (decisao de design homologada) - nunca um novo valor de enum.
+    [Fact]
+    public void N1_BackgroundSafeSkipException_UnsafeStateComReasonELockLiberado()
+    {
+        var fx = new OrchestratorFixture();
+        fx.InputSender.ThrowOnSend = new BackgroundSafeSkipException("'Todas vendas' nao confirmado na barra - nao seguro prosseguir.");
+
+        var result = fx.BuildOrchestrator().Run();
+
+        Assert.False(result.Success);
+        Assert.Equal(AgentStage.UnsafeState, result.FinalStage);
+        Assert.Equal(AgentErrorCode.UnsafeState, result.ErrorCode);
+        Assert.Equal(1, fx.Lock.ReleaseCalls);
+        Assert.Equal(0, fx.Committer.CommitOnceCalls);
+
+        var loggedEvent = fx.Logger.Events.Last();
+        Assert.Equal(nameof(AgentStage.UnsafeState), loggedEvent.Stage);
+        Assert.Equal(nameof(AgentErrorCode.UnsafeState), loggedEvent.ErrorCode);
+        Assert.Contains("Todas vendas", loggedEvent.Reason);
+    }
+
     // ---------- N2. Excecao na PRIMEIRA chamada de log (F6.13.2 correcao) ----------
     // Antes da correcao, Log(Start) acontecia FORA do try e essa excecao
     // escaparia de Run() sem tratamento nenhum. Depois da correcao, deve
@@ -359,6 +451,11 @@ public sealed class ExportAgentOrchestratorTests
             // nenhum destes 3 estagios.
             "ClientOpened", "TransactionsTabActive", "OverflowMenuOpened",
             "Failed", "SkippedBusy", "SkippedSessionUnavailable", "NexNotFound", "UnsafeState",
+            // Modo scheduled-safe (--run-once-scheduled-safe) - ver plano
+            // aprovado. ExportAgentOrchestrator so emite este estagio
+            // quando o IInputSender injetado lanca NotForegroundException
+            // (nunca o sender manual homologado).
+            "SkippedNotForeground",
         };
 
         var nomesReais = Enum.GetNames(typeof(AgentStage));

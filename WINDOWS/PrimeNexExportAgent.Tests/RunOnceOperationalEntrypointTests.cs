@@ -137,6 +137,12 @@ public sealed class RunOnceOperationalEntrypointTests
         Assert.Contains("new Win32FileMover(", source);
         Assert.Contains("new ConsoleAgentLogger(", source);
         Assert.DoesNotContain("new Fake", source);
+        // Trava estrutural (modo scheduled-safe): o entrypoint manual
+        // homologado NUNCA deve migrar para o sender que nao forca
+        // foreground sem uma decisao explicita e uma nova rodada de
+        // homologacao - continua usando WindowsInputSender (ja
+        // confirmado acima), nunca WindowsScheduledSafeInputSender.
+        Assert.DoesNotContain("WindowsScheduledSafeInputSender", source);
     }
 
     // ---------- M. Source guard: generic ClickSave nunca usado pelo operacional ----------

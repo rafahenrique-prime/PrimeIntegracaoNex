@@ -296,6 +296,28 @@ public sealed class FakeMsaaAccessibilityApi : IMsaaAccessibilityApi
         return new MsaaElementHandle(name, (screenX, screenY)); // ChildId carrega o ponto de scan (convencao SOMENTE deste fake)
     }
 
+    /// <summary>Scheduler V2 - simula HitTestWithinWindow por
+    /// (hWnd,x,y), independente do mapa global NamesByPoint acima (nunca
+    /// compartilha estado com HitTest - evita que um teste do hit-test
+    /// global "vaze" acidentalmente para um teste do hit-test escopado a
+    /// janela, ou vice-versa).</summary>
+    public Dictionary<(nint hWnd, int x, int y), string> NamesByWindowPoint { get; } = new();
+    public HashSet<nint> AccessibleObjectFromWindowShouldFailFor { get; } = new();
+
+    public MsaaElementHandle? HitTestWithinWindow(nint hWnd, int screenX, int screenY)
+    {
+        if (AccessibleObjectFromWindowShouldFailFor.Contains(hWnd)) return null;
+        if (!NamesByWindowPoint.TryGetValue((hWnd, screenX, screenY), out var name)) return null;
+        // ChildId permanece (x,y) - MESMO formato de HitTest() - para que
+        // GetRole/GetState/GetLocation/DescribeChildId (que fazem
+        // ((int x, int y))element.ChildId) funcionem identicamente para
+        // handles vindos de qualquer um dos dois metodos de hit-test.
+        // Desambiguar por janela (quando necessario) fica a cargo do
+        // proprio teste, usando ranges de (x,y) que nao se sobrepoem
+        // entre janelas diferentes num mesmo cenario.
+        return new MsaaElementHandle(name, (screenX, screenY));
+    }
+
     public string? GetName(MsaaElementHandle element) => (string)element.AccessibleObject;
 
     public int GetRole(MsaaElementHandle element)

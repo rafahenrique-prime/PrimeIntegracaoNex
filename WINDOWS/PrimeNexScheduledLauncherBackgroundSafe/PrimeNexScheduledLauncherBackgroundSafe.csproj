@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Launcher dedicado ao Task Scheduler para o Scheduler V2 (flag
+    "run once scheduled background safe") - PARALELO ao launcher V1
+    (PrimeNexScheduledLauncher.csproj, INTOCADO por este projeto). Mesmo
+    motivo de existir que o V1: OutputType=WinExe garante que este
+    processo NAO aloca console algum sob LogonType=InteractiveToken.
+    Reutiliza LauncherCore/IChildProcessRunner/RealChildProcessRunner/
+    ChildProcessResult do projeto V1 via ProjectReference - nenhuma logica
+    de spawn/log duplicada, nenhum arquivo do V1 copiado/reescrito.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PrimeNexScheduledLauncherBackgroundSafe</RootNamespace>
+    <AssemblyName>PrimeNexScheduledLauncherBackgroundSafe</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PrimeNexScheduledLauncher\PrimeNexScheduledLauncher.csproj" />
+  </ItemGroup>
+
+</Project>

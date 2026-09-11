@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Launcher dedicado ao Task Scheduler (PrimeNexVendasExport) - EXTERNO
+    ao PrimeNexExportAgent homologado, nunca o altera. Unico motivo de
+    existir: OutputType=WinExe garante que este processo NAO aloca console
+    algum ao ser iniciado pelo Task Scheduler sob LogonType=InteractiveToken
+    (diferente de cmd.exe, que sempre abre uma janela visivel nesse logon
+    type - causa raiz confirmada do foreground steal observado em
+    producao). Nao cria nenhuma janela/Form/tray - e' um processo Windows
+    sem interface, apenas invoca o Agent real via Process.Start
+    (CreateNoWindow=true) e propaga stdout/stderr/exit code.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PrimeNexScheduledLauncher</RootNamespace>
+    <AssemblyName>PrimeNexScheduledLauncher</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PrimeNexScheduledLauncher.Tests" />
+  </ItemGroup>
+
+</Project>

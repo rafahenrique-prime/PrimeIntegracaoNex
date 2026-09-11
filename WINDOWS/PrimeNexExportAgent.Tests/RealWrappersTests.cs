@@ -156,6 +156,41 @@ public sealed class RealWrappersTests
         Assert.NotEqual(TApplicationHwnd, result.Identity!.MainWindowHandle);
     }
 
+    // ---- ClassName: OrdinalIgnoreCase (bug real corrigido - GetClassNameW
+    // ao vivo retornou "TFrmPri", nao "TfrmPri"; Ordinal causava NexNotFound
+    // mesmo com a janela visivel) ----
+    [Theory]
+    [InlineData("TfrmPri")]
+    [InlineData("TFrmPri")]
+    [InlineData("tfrmpri")]
+    public void G1_F_ClassNameVariacaoDeCasing_LocatePass(string className)
+    {
+        var (inspector, scanner, native, _) = BuildInspector();
+        RegisterRealisticNexAdminTopology(native, TfrmPriHwnd, NexAdminPid, tfrmPriClassName: className);
+        scanner.Candidates.Add(new NexProcessCandidate(NexAdminPid, ExpectedExecutablePath, ExpectedSessionId));
+
+        var result = inspector.LocateNexAdmin(ExpectedSessionId);
+
+        Assert.True(result.Passed);
+        Assert.Equal(TfrmPriHwnd, result.Identity!.MainWindowHandle);
+    }
+
+    [Theory]
+    [InlineData("TfrmPriXYZ")]
+    [InlineData("TFrmPr")]
+    [InlineData("QualquerOutraClasse")]
+    public void G1_G_ClassNameDiferente_NexNotFound(string className)
+    {
+        var (inspector, scanner, native, _) = BuildInspector();
+        RegisterRealisticNexAdminTopology(native, TfrmPriHwnd, NexAdminPid, tfrmPriClassName: className);
+        scanner.Candidates.Add(new NexProcessCandidate(NexAdminPid, ExpectedExecutablePath, ExpectedSessionId));
+
+        var result = inspector.LocateNexAdmin(ExpectedSessionId);
+
+        Assert.False(result.Passed);
+        Assert.Equal(AgentErrorCode.NexNotFound, result.ErrorCode);
+    }
+
     [Fact]
     public void G1_B_TfrmPriComOwnerDiferenteDeZero_ContinuaCandidatoValido()
     {
@@ -558,6 +593,37 @@ public sealed class RealWrappersTests
     {
         var (inspector, native, _) = BuildSafeStateFixture();
         native.ClassNameByWindow[TfrmPriHwnd] = "OutraClasse";
+
+        var result = inspector.CheckSafeState(ValidTarget);
+
+        Assert.False(result.Passed);
+        Assert.Equal(AgentErrorCode.NexNotFound, result.ErrorCode);
+    }
+
+    // ---- Revalidacao de ClassName (CheckTopologySafeState): OrdinalIgnoreCase
+    // (mesmo bug real corrigido do LocateNexAdmin) ----
+    [Theory]
+    [InlineData("TfrmPri")]
+    [InlineData("TFrmPri")]
+    [InlineData("tfrmpri")]
+    public void CheckSafeState_ClassNameVariacaoDeCasing_Passa(string className)
+    {
+        var (inspector, native, _) = BuildSafeStateFixture();
+        native.ClassNameByWindow[TfrmPriHwnd] = className;
+
+        var result = inspector.CheckSafeState(ValidTarget);
+
+        Assert.True(result.Passed);
+    }
+
+    [Theory]
+    [InlineData("TfrmPriXYZ")]
+    [InlineData("TFrmPr")]
+    [InlineData("QualquerOutraClasse")]
+    public void CheckSafeState_ClassNameDiferente_Falha(string className)
+    {
+        var (inspector, native, _) = BuildSafeStateFixture();
+        native.ClassNameByWindow[TfrmPriHwnd] = className;
 
         var result = inspector.CheckSafeState(ValidTarget);
 

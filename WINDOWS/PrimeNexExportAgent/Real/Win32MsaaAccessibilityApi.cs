@@ -23,6 +23,42 @@ public sealed class Win32MsaaAccessibilityApi : IMsaaAccessibilityApi
         return new MsaaElementHandle(accObj, childId);
     }
 
+    public MsaaElementHandle? HitTestWithinWindow(nint hWnd, int screenX, int screenY)
+    {
+        Win32MsaaInterop.SetThreadDpiAwarenessContext(Win32MsaaInterop.DPI_AWARENESS_CONTEXT_UNAWARE);
+
+        var riid = Win32MsaaInterop.IID_IAccessible;
+        var hr = Win32MsaaInterop.AccessibleObjectFromWindow(hWnd, Win32MsaaInterop.OBJID_CLIENT, ref riid, out var rootAccObj);
+        if (hr != 0 || rootAccObj is null) return null;
+
+        object? hitResult;
+        try
+        {
+            dynamic acc = rootAccObj;
+            hitResult = acc.accHitTest(screenX, screenY);
+        }
+        catch
+        {
+            return null;
+        }
+
+        // accHitTest devolve um VARIANT: VT_I4 = childId simples do
+        // objeto raiz consultado; VT_DISPATCH = um objeto acessivel
+        // ANINHADO distinto (o alvo real, com seu proprio CHILDID_SELF=0)
+        // - comportamento documentado da API, confirmado em runtime real
+        // (Fases A.5/A.10, onde todos os itens de barra/popup retornaram
+        // KIND=VT_DISPATCH). Nunca assumir um dos dois formatos sem checar.
+        if (hitResult is int childId)
+        {
+            return new MsaaElementHandle(rootAccObj, childId);
+        }
+        if (hitResult is not null)
+        {
+            return new MsaaElementHandle(hitResult, 0);
+        }
+        return null; // VT_EMPTY - hit-test nao encontrou nada nesse ponto
+    }
+
     public string? GetName(MsaaElementHandle element)
     {
         try

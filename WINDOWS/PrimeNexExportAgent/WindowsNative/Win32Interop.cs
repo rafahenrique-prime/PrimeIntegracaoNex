@@ -56,7 +56,52 @@ internal static class Win32Interop
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, nint lParam);
 
+    /// <summary>Scheduler V2 - somente leitura, usada para relocalizar
+    /// (nunca cachear) o botao de overflow por ClassName+ControlId dentro
+    /// da subarvore inteira da janela alvo. EnumChildWindows ja enumera
+    /// recursivamente filhos/netos/etc (mesma semantica documentada em
+    /// F6.14B2.3 para Win32SaveDialogInterop) - reaproveita o mesmo
+    /// delegate EnumWindowsProc acima (assinatura identica).</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnumChildWindows(nint hWndParent, EnumWindowsProc lpEnumFunc, nint lParam);
+
+    /// <summary>GetDlgCtrlID(hWnd) - somente leitura, identifica o control
+    /// ID atribuido pelo framework (Delphi/DevExpress) ao HWND informado.
+    /// Retorna 0 se o HWND nao tiver ID atribuido/for invalido.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern int GetDlgCtrlID(nint hWnd);
+
+    /// <summary>IsWindowEnabled(hWnd) - somente leitura.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindowEnabled(nint hWnd);
+
+    /// <summary>IsIconic(hWnd) - somente leitura, True se a janela estiver
+    /// minimizada (SW_SHOWMINIMIZED). Hybrid V3 - discriminador de
+    /// NexRuntimeState.Minimized, evidencia real: TApplication.IsIconic
+    /// so' e' True quando o NexAdmin esta genuinamente minimizado (False
+    /// tanto em foreground quanto em background-aberto).</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsIconic(nint hWnd);
+
+    /// <summary>GetParent(hWnd) real (distinto de GetWindow(hWnd, GW_OWNER)
+    /// acima) - usado para reencontrar o parent verdadeiro de um controle
+    /// filho (ex.: o botao de overflow), nunca confundido com o owner de
+    /// uma janela top-level.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern nint GetParent(nint hWnd);
+
     internal const uint GW_OWNER = 4;
+
+    /// <summary>Scheduler V2 - usados com GetWindow() acima para caminhar a
+    /// lista de filhos IMEDIATOS (Z-order) de um parent e computar a
+    /// posicao (indice 0-based) de um HWND especifico entre eles - nunca
+    /// confundir com EnumChildWindows (que enumera TODA a subarvore,
+    /// recursiva, sem nocao de irmandade imediata).</summary>
+    internal const uint GW_CHILD = 5;
+    internal const uint GW_HWNDNEXT = 2;
 
     // ---- wtsapi32.dll (somente leitura) ----
 

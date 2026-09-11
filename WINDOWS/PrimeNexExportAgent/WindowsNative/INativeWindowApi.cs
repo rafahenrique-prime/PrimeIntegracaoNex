@@ -50,4 +50,45 @@ public interface INativeWindowApi
     /// localizar a janela TfrmPri (LocateNexAdmin) quanto para o gate G3
     /// (exatamente 1 janela top-level visivel relevante).</summary>
     IReadOnlyList<nint> GetVisibleTopLevelWindowsForProcess(int processId);
+
+    /// <summary>Scheduler V2 - GetDlgCtrlID(hWnd), somente leitura.
+    /// Retorna 0 se o HWND for invalido/nao tiver ID atribuido.</summary>
+    int GetControlId(nint hWnd);
+
+    /// <summary>Scheduler V2 - IsWindowEnabled(hWnd), somente leitura.</summary>
+    bool IsWindowCurrentlyEnabled(nint hWnd);
+
+    /// <summary>Scheduler V2 - GetParent(hWnd) real, distinto de GetOwner
+    /// (GW_OWNER) acima - usado para reencontrar o parent verdadeiro de um
+    /// controle filho (ex.: botao de overflow), nunca o owner de uma
+    /// janela top-level. Retorna 0 se o HWND for invalido/nao tiver
+    /// parent.</summary>
+    nint GetParentWindow(nint hWnd);
+
+    /// <summary>Scheduler V2 - TODOS os descendentes (subarvore inteira,
+    /// via EnumChildWindows) do HWND informado - somente leitura, mesma
+    /// semantica ja homologada em Win32SaveDialogInterop/F6.14B2.3.</summary>
+    IReadOnlyList<nint> GetAllDescendants(nint hWndParent);
+
+    /// <summary>Scheduler V2 - filhos IMEDIATOS de `hWndParent`, na ordem Z
+    /// real (GetWindow(GW_CHILD) + GW_HWNDNEXT), usada exclusivamente para
+    /// computar o indice 0-based de um HWND especifico entre seus irmaos
+    /// verdadeiros - nunca confundir com GetAllDescendants (subarvore
+    /// inteira, sem nocao de irmandade imediata).</summary>
+    IReadOnlyList<nint> GetImmediateChildrenInZOrder(nint hWndParent);
+
+    /// <summary>Hybrid V3 - IsIconic(hWnd), somente leitura. True se a
+    /// janela estiver minimizada (SW_SHOWMINIMIZED). Discriminador de
+    /// NexRuntimeState.Minimized (ver Win32NexRuntimeStateProbe) -
+    /// distinto de IsWindowCurrentlyVisible, que fica False tanto em
+    /// Minimized quanto em Closed.</summary>
+    bool IsWindowMinimized(nint hWnd);
+
+    /// <summary>Hybrid V3 - TODAS as janelas top-level (EnumWindows) do PID
+    /// informado, SEM filtrar por IsWindowVisible (distinto de
+    /// GetVisibleTopLevelWindowsForProcess, que so' devolve visiveis) -
+    /// necessario porque TFrmPri fica Visible=False quando minimizado,
+    /// mas TApplication (Owner==0) permanece descobrivel aqui em qualquer
+    /// estado (aberto, minimizado) para permitir a classificacao correta.</summary>
+    IReadOnlyList<nint> GetAllTopLevelWindowsForProcess(int processId);
 }

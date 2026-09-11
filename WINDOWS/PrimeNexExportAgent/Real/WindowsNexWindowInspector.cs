@@ -30,6 +30,11 @@ public sealed class WindowsNexWindowInspector : INexWindowInspector
     private const string HistoricoTabName = "Hist\u00f3rico";
 
     private const string VendasTabName = "Vendas";
+    /// <summary>Comparada sempre com StringComparison.OrdinalIgnoreCase -
+    /// evidencia real (leitura direta via GetClassNameW, mesmo HWND/processo,
+    /// 3 estados A/B/C) mostrou a janela real registrada como "TFrmPri",
+    /// nao "TfrmPri". Ordinal (case-sensitive) causava NexNotFound mesmo com
+    /// a janela visivel - bug ativo confirmado no runtime pos-reboot.</summary>
     private const string ExpectedClassName = "TfrmPri";
     private const string ExpectedProcessName = "NexAdmin";
     private const string ExpectedExecutablePath = @"C:\Nex\NexAdmin.exe";
@@ -92,7 +97,7 @@ public sealed class WindowsNexWindowInspector : INexWindowInspector
             foreach (var hwnd in topLevelWindows)
             {
                 var className = _nativeWindows.GetClassName(hwnd);
-                if (string.Equals(className, ExpectedClassName, StringComparison.Ordinal))
+                if (string.Equals(className, ExpectedClassName, StringComparison.OrdinalIgnoreCase))
                 {
                     tfrmPriMatches.Add((candidate.ProcessId, hwnd, candidate.SessionId));
                 }
@@ -192,7 +197,7 @@ public sealed class WindowsNexWindowInspector : INexWindowInspector
         }
 
         var className = _nativeWindows.GetClassName(target.MainWindowHandle);
-        if (!string.Equals(className, ExpectedClassName, StringComparison.Ordinal))
+        if (!string.Equals(className, ExpectedClassName, StringComparison.OrdinalIgnoreCase))
         {
             return NexWindowCheckResult.Fail(AgentErrorCode.NexNotFound, $"ClassName da janela alvo mudou (revalidacao): '{className}'");
         }

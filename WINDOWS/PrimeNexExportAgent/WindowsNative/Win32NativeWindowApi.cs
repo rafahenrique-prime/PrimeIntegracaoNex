@@ -87,4 +87,59 @@ public sealed class Win32NativeWindowApi : INativeWindowApi
         Win32Interop.EnumWindows(Callback, 0);
         return result;
     }
+
+    public int GetControlId(nint hWnd) => IsWindowValid(hWnd) ? Win32Interop.GetDlgCtrlID(hWnd) : 0;
+
+    public bool IsWindowCurrentlyEnabled(nint hWnd) => IsWindowValid(hWnd) && Win32Interop.IsWindowEnabled(hWnd);
+
+    public nint GetParentWindow(nint hWnd) => IsWindowValid(hWnd) ? Win32Interop.GetParent(hWnd) : 0;
+
+    public IReadOnlyList<nint> GetAllDescendants(nint hWndParent)
+    {
+        var result = new List<nint>();
+        bool Callback(nint hWnd, nint lParam)
+        {
+            result.Add(hWnd);
+            return true;
+        }
+        Win32Interop.EnumChildWindows(hWndParent, Callback, 0);
+        return result;
+    }
+
+    public IReadOnlyList<nint> GetImmediateChildrenInZOrder(nint hWndParent)
+    {
+        var result = new List<nint>();
+        if (!IsWindowValid(hWndParent)) return result;
+
+        var current = Win32Interop.GetWindow(hWndParent, Win32Interop.GW_CHILD);
+        while (current != 0)
+        {
+            result.Add(current);
+            current = Win32Interop.GetWindow(current, Win32Interop.GW_HWNDNEXT);
+        }
+        return result;
+    }
+
+    public bool IsWindowMinimized(nint hWnd) => IsWindowValid(hWnd) && Win32Interop.IsIconic(hWnd);
+
+    public IReadOnlyList<nint> GetAllTopLevelWindowsForProcess(int processId)
+    {
+        var result = new List<nint>();
+
+        bool Callback(nint hWnd, nint lParam)
+        {
+            // Hybrid V3: mesma logica de GetVisibleTopLevelWindowsForProcess,
+            // exceto SEM o filtro IsWindowVisible - necessario para achar
+            // TApplication/TfrmPri mesmo quando minimizados (Visible=False).
+            var owningPid = GetOwningProcessId(hWnd);
+            if (owningPid == processId)
+            {
+                result.Add(hWnd);
+            }
+            return true;
+        }
+
+        Win32Interop.EnumWindows(Callback, 0);
+        return result;
+    }
 }

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Launcher dedicado ao Task Scheduler para o Hybrid V3 (flag
+    "run once scheduled hybrid") - PARALELO aos launchers V1
+    (PrimeNexScheduledLauncher.csproj) e V2
+    (PrimeNexScheduledLauncherBackgroundSafe.csproj), ambos INTOCADOS por
+    este projeto. Mesmo motivo de existir: OutputType=WinExe garante que
+    este processo NAO aloca console algum sob LogonType=InteractiveToken.
+    Reutiliza LauncherCore/IChildProcessRunner/RealChildProcessRunner/
+    ChildProcessResult do projeto V1 via ProjectReference - nenhuma logica
+    de spawn/log duplicada, nenhum arquivo do V1/V2 copiado/reescrito.
+
+    A Task de producao PrimeNexVendasExport aponta para este launcher
+    (PrimeNexScheduledLauncherHybrid.exe) - confirmado via Task Scheduler
+    em 2026-09-10. Os launchers V1 (PrimeNexScheduledLauncher.csproj) e V2
+    (PrimeNexScheduledLauncherBackgroundSafe.csproj) permanecem intocados
+    e disponiveis standalone: V1 para rollback, V2 como mecanismo
+    standalone/diagnostico.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>PrimeNexScheduledLauncherHybrid</RootNamespace>
+    <AssemblyName>PrimeNexScheduledLauncherHybrid</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PrimeNexScheduledLauncher\PrimeNexScheduledLauncher.csproj" />
+  </ItemGroup>
+
+</Project>

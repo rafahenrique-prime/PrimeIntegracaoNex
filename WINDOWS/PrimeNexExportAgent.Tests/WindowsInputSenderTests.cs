@@ -218,4 +218,38 @@ public sealed class WindowsInputSenderTests
         Assert.Equal(1, waiter.WaitForForegroundCalls);
         Assert.Equal(1, input.SendShiftF5Calls);
     }
+
+    // ---- T2 ClassName: OrdinalIgnoreCase (bug real corrigido - GetClassNameW
+    // ao vivo retornou "TFrmPri", nao "TfrmPri"; Ordinal causava falha mesmo
+    // com o target correto) ----
+    [Theory]
+    [InlineData("TfrmPri")]
+    [InlineData("TFrmPri")]
+    [InlineData("tfrmpri")]
+    public void ClassNameVariacaoDeCasing_Aceita(string className)
+    {
+        var (sender, native, input, _) = BuildValidFixture();
+        native.ClassNameByWindow[TargetHwnd] = className;
+
+        var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
+
+        Assert.Null(exception);
+        Assert.Equal(1, input.SendShiftF5Calls);
+    }
+
+    [Theory]
+    [InlineData("TfrmPriXYZ")]
+    [InlineData("TFrmPr")]
+    [InlineData("QualquerOutraClasse")]
+    public void ClassNameDiferente_RejeitaZeroInput(string className)
+    {
+        var (sender, native, input, waiter) = BuildValidFixture();
+        native.ClassNameByWindow[TargetHwnd] = className;
+
+        var exception = Record.Exception(() => sender.SendExportShortcut(ValidTarget));
+
+        Assert.NotNull(exception);
+        Assert.Equal(0, waiter.WaitForForegroundCalls);
+        Assert.Equal(0, input.SendShiftF5Calls);
+    }
 }

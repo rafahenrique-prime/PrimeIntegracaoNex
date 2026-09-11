@@ -39,4 +39,10 @@ public enum AgentStage
     SkippedSessionUnavailable,
     NexNotFound,
     UnsafeState,
+
+    // Modo scheduled-safe (--run-once-scheduled-safe): NexAdmin nao esta
+    // em primeiro plano no momento do input (WindowsScheduledSafeInputSender,
+    // T3/T4) - nunca forca foreground, so desiste e relata. Resultado
+    // esperado e frequente num polling de 5min, nunca tratado como Failed.
+    SkippedNotForeground,
 }

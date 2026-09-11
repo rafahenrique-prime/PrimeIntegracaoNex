@@ -1,5 +1,6 @@
 using System.IO;
 using PrimeNexExportAgent.Contracts;
+using PrimeNexExportAgent.Diagnostics;
 using PrimeNexExportAgent.Domain;
 using PrimeNexExportAgent.Logging;
 
@@ -399,4 +400,30 @@ public sealed class FakeDelay : IDelay
         Durations.Add(duration);
         OnWait?.Invoke(duration);
     }
+}
+
+/// <summary>Hybrid V3 - fake de INexRuntimeStateProbe. `Result` e' o que
+/// Classify() devolve; padrao Open com Reason vazio.</summary>
+public sealed class FakeNexRuntimeStateProbe : INexRuntimeStateProbe
+{
+    public NexRuntimeStateResult Result { get; set; } = new(NexRuntimeState.Open, string.Empty);
+    public int ClassifyCalls { get; private set; }
+
+    public NexRuntimeStateResult Classify()
+    {
+        ClassifyCalls++;
+        return Result;
+    }
+}
+
+/// <summary>Hybrid V3 - fake de IHybridAlertSounds - conta chamadas, nunca
+/// emite som real em testes offline.</summary>
+public sealed class FakeHybridAlertSounds : IHybridAlertSounds
+{
+    public int MinimizedWarningCalls { get; private set; }
+    public int TechnicalFailureAfterActionCalls { get; private set; }
+
+    public void PlayMinimizedWarning() => MinimizedWarningCalls++;
+
+    public void PlayTechnicalFailureAfterAction() => TechnicalFailureAfterActionCalls++;
 }

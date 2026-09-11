@@ -51,4 +51,7 @@ public enum AgentErrorCode
     ExportItemAmbiguous,
     ExportItemNotActionable,
     ZeroRecords,
+
+    // Modo scheduled-safe (--run-once-scheduled-safe).
+    NotForeground,
 }

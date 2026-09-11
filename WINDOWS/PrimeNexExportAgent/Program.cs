@@ -106,6 +106,38 @@ if (PrimeNexExportAgent.Diagnostics.RunOnceOperationalEntrypoint.IsOperationalFl
     return;
 }
 
+if (PrimeNexExportAgent.Diagnostics.RunOnceScheduledSafeEntrypoint.IsScheduledSafeFlag(args))
+{
+    PrimeNexExportAgent.Diagnostics.RunOnceScheduledSafeEntrypoint.Run();
+    return;
+}
+
+// Scheduler V2 (background-safe): paralelo ao V1 acima, NUNCA o
+// substitui. Mesmos gates/mutex/ExportAgentOrchestrator - a unica
+// diferenca e' o IInputSender (WindowsBackgroundExportTrigger), que
+// opera com o NexAdmin em BACKGROUND (WM_COMMAND/BN_CLICKED + MSAA
+// accDoDefaultAction, homologados nas Fases B.1.3/B.2/B.3), nunca tenta
+// foreground.
+if (PrimeNexExportAgent.Diagnostics.RunOnceScheduledBackgroundSafeEntrypoint.IsScheduledBackgroundSafeFlag(args))
+{
+    PrimeNexExportAgent.Diagnostics.RunOnceScheduledBackgroundSafeEntrypoint.Run();
+    return;
+}
+
+// Hybrid V3: COMPOE V1+V2 homologados (HybridInputSender) + classificacao
+// PRE-orchestrator (Open/Minimized/Closed/BlockingUnknown). NAO redesenha
+// nem altera WindowsScheduledSafeInputSender/WindowsBackgroundExportTrigger -
+// ambos continuam disponiveis e intocados via seus proprios flags acima,
+// preservados para diagnostico/rollback.
+// A Task de producao PrimeNexVendasExport aponta para o launcher Hybrid
+// (PrimeNexScheduledLauncherHybrid.exe) - confirmado via Task Scheduler
+// em 2026-09-10. Hybrid compoe V1/V2 conforme o estado runtime do NexAdmin.
+if (PrimeNexExportAgent.Diagnostics.RunOnceScheduledHybridEntrypoint.IsScheduledHybridFlag(args))
+{
+    PrimeNexExportAgent.Diagnostics.RunOnceScheduledHybridEntrypoint.Run();
+    return;
+}
+
 // V1 (extrato individual por cliente) - probe supervisionado one-shot,
 // mesmo padrao dos demais --diagnostic-* acima. NUNCA alcancavel sem o
 // argumento exato "--diagnostic-individual-statement-once" seguido do
@@ -127,4 +159,6 @@ Console.WriteLine("Use --diagnostic-publish-isolated <caminho.xls dentro de OUTP
 Console.WriteLine("Use --diagnostic-mutex-hold <nomeDoMutex> <holdMs> para o helper de teste de concorrencia real entre processos do Win32ExecutionLock - zero NEX/UI/publicacao, so um Mutex nomeado.");
 Console.WriteLine("Use --diagnostic-confirmed-save-committer-once para o probe supervisionado que homologa o WindowsConfirmedSaveDialogCommitter real (PODE enviar Shift+F5 real e clicar Salvar via Committer exatamente 1 vez) - para em EXPORT_STAGE, NUNCA avanca para Validator/Publisher/EXPORTADOS. So execute sob o ritual BEFORE/AFTER.");
 Console.WriteLine("Use --run-once-operational para o ENTRYPOINT OPERACIONAL REAL (gates -> Shift+F5 -> SaveDialog -> CommitOnce -> Watcher -> Validate -> Publish -> EXPORTADOS), UMA execucao completa. AINDA NAO AUTORIZADO PARA GO-LIVE - requer ritual BEFORE/autorizacao explicita antes do primeiro uso real.");
+Console.WriteLine("Use --run-once-scheduled-safe para o ENTRYPOINT recorrente seguro (Task Scheduler): mesmos gates e mesmo ExportAgentOrchestrator de --run-once-operational, mas o Shift+F5 SO e enviado se o NexAdmin ja estiver em primeiro plano por conta propria - NUNCA forca foreground; se nao estiver, desiste (SkippedNotForeground, exit 0). Scheduler V1 homologado, preservado standalone para diagnostico/rollback - a Task PrimeNexVendasExport em producao usa o launcher Hybrid (PrimeNexScheduledLauncherHybrid.exe), que compoe este caminho conforme o estado runtime do NexAdmin. Nao alterar/substituir esta Task sem ritual BEFORE e autorizacao explicita.");
 Console.WriteLine("Use --diagnostic-individual-statement-once <codigoCliente> <nomeEsperado> (ambos obrigatorios) para o probe supervisionado one-shot da V1 (extrato individual por cliente): gates -> busca+F2 -> Transacoes -> '...' -> Exportar -> SaveDialog -> CommitOnce -> Watcher -> Validate -> Publish -> EXPORTADOS. PODE enviar F2 real, abrir a aba Transacoes, abrir o menu de overflow, acionar Exportar via MSAA, e escrever/clicar no dialogo Salvar Como. AINDA NAO AUTORIZADO PARA EXECUCAO REAL - requer ritual BEFORE/autorizacao explicita antes do primeiro uso.");
+Console.WriteLine("Use --run-once-scheduled-background-safe para o ENTRYPOINT recorrente do Scheduler V2 (Task Scheduler, paralelo ao --run-once-scheduled-safe acima - nunca o substitui): mesmos gates/mutex/ExportAgentOrchestrator, mas o trigger de exportacao opera com o NexAdmin em BACKGROUND (WM_COMMAND/BN_CLICKED no abridor + MSAA accDoDefaultAction em 'Exportar', homologados nas Fases B.1.3/B.2/B.3) - NUNCA forca/tenta foreground. Gates de estado operacional seguro (NEX em foreground/abridor/'Todas vendas' nao confirmados) resultam em skip (UnsafeState, exit 0); qualquer divergencia APOS o WM_COMMAND e falha real (exit != 0). AINDA NAO usado por nenhuma tarefa agendada - requer homologacao offline + ritual BEFORE/autorizacao explicita antes do primeiro uso real.");

@@ -31,6 +31,19 @@ public interface IMsaaAccessibilityApi
     /// investigacao), ou null se nada for encontrado.</summary>
     MsaaElementHandle? HitTest(int screenX, int screenY);
 
+    /// <summary>Scheduler V2 - AccessibleObjectFromWindow(hWnd,
+    /// OBJID_CLIENT) seguido de accHitTest DIRETAMENTE no IAccessible
+    /// retornado (nunca AccessibleObjectFromPoint/hit-test de desktop) -
+    /// imune a oclusao por outra janela em primeiro plano. Usado para
+    /// localizar "Todas vendas" na barra da aba Historico e "Exportar"
+    /// dentro do popup TdxBarSubMenuControl, ambos com o NexAdmin em
+    /// background. `screenX`/`screenY` permanecem em coordenadas de TELA
+    /// (accHitTest exige isso mesmo operando sobre um objeto ancorado a
+    /// um HWND especifico - comportamento documentado da API MSAA).
+    /// Retorna null se AccessibleObjectFromWindow falhar ou accHitTest nao
+    /// encontrar nada nesse ponto (VT_EMPTY).</summary>
+    MsaaElementHandle? HitTestWithinWindow(nint hWnd, int screenX, int screenY);
+
     string? GetName(MsaaElementHandle element);
     int GetRole(MsaaElementHandle element);
     int GetState(MsaaElementHandle element);

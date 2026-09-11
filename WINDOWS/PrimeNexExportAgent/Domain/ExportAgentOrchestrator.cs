@@ -159,6 +159,32 @@ public sealed class ExportAgentOrchestrator
                 {
                     _inputSender.SendExportShortcut(target);
                 }
+                catch (NotForegroundException ex)
+                {
+                    // Modo scheduled-safe (WindowsScheduledSafeInputSender):
+                    // NexAdmin nao esta em primeiro plano - resultado
+                    // ESPERADO num polling recorrente, nunca um Failed. O
+                    // sender manual (WindowsInputSender) nunca lanca este
+                    // tipo, entao este catch nunca dispara para o modo
+                    // homologado --run-once-operational.
+                    TryLog(runId, AgentStage.SkippedNotForeground, AgentErrorCode.NotForeground, reason: ex.Message);
+                    return AgentRunResult.Stop(runId, AgentStage.SkippedNotForeground, AgentErrorCode.NotForeground);
+                }
+                catch (BackgroundSafeSkipException ex)
+                {
+                    // Modo scheduled-background-safe (WindowsBackgroundExportTrigger,
+                    // Scheduler V2): um gate de ESTADO OPERACIONAL SEGURO
+                    // verificado ANTES do WM_COMMAND nao foi satisfeito (NEX
+                    // em foreground, abridor nao identificado, "Todas
+                    // vendas" nao confirmado) - resultado ESPERADO num
+                    // polling recorrente, reaproveita AgentStage.UnsafeState
+                    // (decisao de design homologada: nunca um novo valor de
+                    // enum so para isto), nunca um Failed. Nenhum outro
+                    // IInputSender lanca este tipo - este catch nunca
+                    // dispara para --run-once-operational/--run-once-scheduled-safe.
+                    TryLog(runId, AgentStage.UnsafeState, AgentErrorCode.UnsafeState, reason: ex.Message);
+                    return AgentRunResult.Stop(runId, AgentStage.UnsafeState, AgentErrorCode.UnsafeState);
+                }
                 catch (Exception ex)
                 {
                     // F6.13.3: TryLog (nao Log) - estamos DENTRO de um catch;
@@ -282,7 +308,7 @@ public sealed class ExportAgentOrchestrator
     private void Log(Guid runId, AgentStage stage, AgentErrorCode? errorCode = null, string? fileName = null, string? reason = null)
     {
         var errorCodeText = errorCode is null or AgentErrorCode.None ? null : errorCode.ToString();
-        _logger.Log(new AgentLogEvent(_clock.Now, runId, stage.ToString(), errorCodeText, fileName));
+        _logger.Log(new AgentLogEvent(_clock.Now, runId, stage.ToString(), errorCodeText, fileName, reason));
     }
 
     /// <summary>Variante segura de Log() para uso EXCLUSIVO dentro de blocos

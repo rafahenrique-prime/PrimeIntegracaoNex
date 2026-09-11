@@ -29,6 +29,9 @@ namespace PrimeNexExportAgent.WindowsInput;
 /// </summary>
 public sealed class WindowsInputSender : IInputSender
 {
+    /// <summary>OrdinalIgnoreCase - evidencia real (GetClassNameW ao vivo)
+    /// mostrou a janela registrada como "TFrmPri", nao "TfrmPri"; Ordinal
+    /// causava falso T2 mesmo com o target correto.</summary>
     private const string ExpectedClassName = "TfrmPri";
 
     private readonly INativeWindowApi _nativeWindows;
@@ -58,7 +61,7 @@ public sealed class WindowsInputSender : IInputSender
         }
 
         var className = _nativeWindows.GetClassName(target.MainWindowHandle);
-        if (!string.Equals(className, ExpectedClassName, StringComparison.Ordinal))
+        if (!string.Equals(className, ExpectedClassName, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"PRE-INPUT TARGET GATE T2 falhou: ClassName mudou para '{className}'.");
         }
