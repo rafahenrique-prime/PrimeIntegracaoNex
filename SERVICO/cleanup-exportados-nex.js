@@ -49,6 +49,11 @@ const { RESULTADOS_CONFIRMADOS } = require(path.join(__dirname, 'checkpoint-sqli
 
 const PADRAO_VENDAS_AUTO = /^vendas-auto-\d{8}-\d{6}\.xls$/;
 
+/** Cleanup V2 Fase 0 - mesmo formato hex ja usado por calcularSha256DeBuffer
+ * abaixo (crypto.createHash('sha256').digest('hex')): 64 caracteres
+ * hexadecimais, case-insensitive. */
+const REGEX_SHA256_HEX = /^[0-9a-f]{64}$/i;
+
 /** @param {string} nome @returns {boolean} */
 function nomeEhVendasAutoValido(nome) {
   return typeof nome === 'string' && PADRAO_VENDAS_AUTO.test(nome);
@@ -262,12 +267,25 @@ async function avaliarArquivoVendasAuto(opcoes) {
  * Avalia UM arquivo dentro de EXPORT_ARCHIVE para possivel delete
  * definitivo. NUNCA usa mtime como fonte de `archivedAt` (o move pode
  * preservar timestamps antigos do arquivo original) - exige um manifesto
- * persistente (`{ [nomeArquivo]: isoArchivedAt }`) como unica fonte de
- * verdade para a idade DENTRO do archive.
+ * persistente (`{ [nomeArquivo]: {archivedAt, sha256} }`) como unica fonte
+ * de verdade para a idade DENTRO do archive E para uma futura revalidacao
+ * de integridade (Cleanup V2 Fase 0 - o proprio delete real, que
+ * revalidaria este sha256 contra o arquivo no disco, NAO e implementado
+ * nesta fase; aqui so preparamos o schema e a validacao estrutural).
+ *
+ * Nenhum manifesto real ou legado existe nesta instalacao (verificado
+ * explicitamente antes desta mudanca) - este e um formato NOVO, nao uma
+ * migracao de dado real. Mesmo assim, por seguranca, uma entrada no
+ * formato ANTIGO hipotetico (string ISO pura, sem sha256) e lida sem
+ * lancar excecao - mas NUNCA tratada como completa (sempre
+ * MANIFEST_SHA256_AUSENTE, fail-closed), pois sem hash nao ha como provar
+ * integridade.
  *
  * @param {Object} opcoes
  * @param {string} opcoes.nomeArquivo
- * @param {Object} opcoes.manifest - `{ [nomeArquivo]: isoArchivedAt }`
+ * @param {Object} opcoes.manifest - `{ [nomeArquivo]: {archivedAt:string, sha256:string} }`
+ *   (uma entrada em formato de string ISO pura tambem e aceita para
+ *   leitura, mas sempre resulta em MANIFEST_SHA256_AUSENTE)
  * @param {number} opcoes.agoraMs
  * @param {number} [opcoes.deleteAfterDays] - default 30
  * @returns {Object}
@@ -281,8 +299,17 @@ function avaliarArquivoArchive(opcoes) {
     return Object.assign({}, base, { action: 'IGNORE', reason: 'FORA_DO_ESCOPO_V1' });
   }
 
-  const archivedAtIso = opc.manifest && opc.manifest[opc.nomeArquivo];
-  if (!archivedAtIso) {
+  const entrada = opc.manifest && opc.manifest[opc.nomeArquivo];
+  if (!entrada) {
+    return Object.assign({}, base, { action: 'SKIP_UNSAFE', reason: 'MANIFEST_ARCHIVED_AT_AUSENTE (nunca apagar sem saber quando foi arquivado)' });
+  }
+
+  // Formato legado hipotetico (string ISO pura, sem sha256) - lido sem
+  // lancar, nunca tratado como completo (ver doc acima).
+  const archivedAtIso = typeof entrada === 'string' ? entrada : entrada.archivedAt;
+  const sha256 = typeof entrada === 'string' ? undefined : entrada.sha256;
+
+  if (!archivedAtIso || typeof archivedAtIso !== 'string') {
     return Object.assign({}, base, { action: 'SKIP_UNSAFE', reason: 'MANIFEST_ARCHIVED_AT_AUSENTE (nunca apagar sem saber quando foi arquivado)' });
   }
 
@@ -291,15 +318,23 @@ function avaliarArquivoArchive(opcoes) {
     return Object.assign({}, base, { action: 'SKIP_UNSAFE', reason: 'MANIFEST_ARCHIVED_AT_INVALIDO' });
   }
 
+  if (!sha256 || typeof sha256 !== 'string' || sha256.trim() === '') {
+    return Object.assign({}, base, { action: 'SKIP_UNSAFE', reason: 'MANIFEST_SHA256_AUSENTE (sem hash nao ha como revalidar integridade antes de um delete real futuro)' });
+  }
+  if (!REGEX_SHA256_HEX.test(sha256)) {
+    return Object.assign({}, base, { action: 'SKIP_UNSAFE', reason: 'MANIFEST_SHA256_INVALIDO (esperado hex sha256 de 64 caracteres)' });
+  }
+
   const age = idadeEmDias(archivedAtMs, opc.agoraMs);
   if (age < deleteAfterDays) {
-    return Object.assign({}, base, { action: 'KEEP', reason: 'IDADE_NO_ARCHIVE_INSUFICIENTE', age });
+    return Object.assign({}, base, { action: 'KEEP', reason: 'IDADE_NO_ARCHIVE_INSUFICIENTE', age, sha256 });
   }
-  return Object.assign({}, base, { action: 'WOULD_DELETE', reason: 'IDADE_NO_ARCHIVE_EXCEDIDA', age });
+  return Object.assign({}, base, { action: 'WOULD_DELETE', reason: 'IDADE_NO_ARCHIVE_EXCEDIDA', age, sha256 });
 }
 
 module.exports = {
   PADRAO_VENDAS_AUTO,
+  REGEX_SHA256_HEX,
   nomeEhVendasAutoValido,
   extrairTransacoesRelevantes,
   avaliarProtecaoTransacao,

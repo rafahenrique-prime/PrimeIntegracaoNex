@@ -234,21 +234,92 @@ async function main() {
     outbox.fechar();
   }
 
-  // ---- T12/T13: archive delete por manifest ----
+  // ---- Cleanup V2 Fase 0: schema do manifesto de archive com sha256 ----
+  const SHA_VALIDO_A = 'a'.repeat(64);
+  const SHA_VALIDO_B = 'B'.repeat(64); // maiuscula valida (regex case-insensitive), deve ser preservada exatamente na saida
+
+  // ---- T12/T13: archive KEEP/WOULD_DELETE por manifest novo (archivedAt+sha256) ----
   {
-    const manifestRecente = { 'vendas-auto-20260901-000000.xls': new Date(AGORA_MS - 10 * UM_DIA_MS).toISOString() };
+    const manifestRecente = { 'vendas-auto-20260901-000000.xls': { archivedAt: new Date(AGORA_MS - 10 * UM_DIA_MS).toISOString(), sha256: SHA_VALIDO_A } };
     const r12 = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260901-000000.xls', manifest: manifestRecente, agoraMs: AGORA_MS, deleteAfterDays: 30 });
     registrar(check('T12 - archive <30 dias -> KEEP', r12.action === 'KEEP'));
+    registrar(check('A/F - sha256 minuscula preservado exatamente no resultado (KEEP)', r12.sha256 === SHA_VALIDO_A));
 
-    const manifestAntigo = { 'vendas-auto-20260801-000000.xls': new Date(AGORA_MS - 31 * UM_DIA_MS).toISOString() };
+    const manifestAntigo = { 'vendas-auto-20260801-000000.xls': { archivedAt: new Date(AGORA_MS - 31 * UM_DIA_MS).toISOString(), sha256: SHA_VALIDO_B } };
     const r13 = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260801-000000.xls', manifest: manifestAntigo, agoraMs: AGORA_MS, deleteAfterDays: 30 });
     registrar(check('T13 - archive >=30 dias -> WOULD_DELETE', r13.action === 'WOULD_DELETE'));
+    registrar(check('A/F - sha256 maiuscula preservado exatamente no resultado (WOULD_DELETE)', r13.sha256 === SHA_VALIDO_B));
   }
 
   // ---- Manifest ausente -> SKIP_UNSAFE (nunca confia em mtime) ----
   {
     const r = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260801-000001.xls', manifest: {}, agoraMs: AGORA_MS, deleteAfterDays: 30 });
-    registrar(check('Archive sem manifest.archivedAt -> SKIP_UNSAFE (nunca confia em mtime)', r.action === 'SKIP_UNSAFE'));
+    registrar(check('Archive sem manifest.archivedAt -> SKIP_UNSAFE (nunca confia em mtime)', r.action === 'SKIP_UNSAFE' && r.reason.startsWith('MANIFEST_ARCHIVED_AT_AUSENTE')));
+  }
+
+  // ---- D. archivedAt ausente (entrada e objeto, mas sem campo archivedAt) -> SKIP_UNSAFE ----
+  {
+    const manifest = { 'vendas-auto-20260801-000002.xls': { sha256: SHA_VALIDO_A } };
+    const r = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260801-000002.xls', manifest, agoraMs: AGORA_MS, deleteAfterDays: 30 });
+    registrar(check('D - archivedAt ausente (entrada objeto sem archivedAt) -> SKIP_UNSAFE/MANIFEST_ARCHIVED_AT_AUSENTE', r.action === 'SKIP_UNSAFE' && r.reason.startsWith('MANIFEST_ARCHIVED_AT_AUSENTE')));
+  }
+
+  // ---- E. archivedAt invalido -> SKIP_UNSAFE ----
+  {
+    const manifest = { 'vendas-auto-20260801-000003.xls': { archivedAt: 'nao-e-uma-data', sha256: SHA_VALIDO_A } };
+    const r = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260801-000003.xls', manifest, agoraMs: AGORA_MS, deleteAfterDays: 30 });
+    registrar(check('E - archivedAt invalido -> SKIP_UNSAFE/MANIFEST_ARCHIVED_AT_INVALIDO', r.action === 'SKIP_UNSAFE' && r.reason === 'MANIFEST_ARCHIVED_AT_INVALIDO'));
+  }
+
+  // ---- B. sha256 ausente (archivedAt valido, sem sha256) -> SKIP_UNSAFE ----
+  {
+    const manifest = { 'vendas-auto-20260801-000004.xls': { archivedAt: new Date(AGORA_MS - 31 * UM_DIA_MS).toISOString() } };
+    const r = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260801-000004.xls', manifest, agoraMs: AGORA_MS, deleteAfterDays: 30 });
+    registrar(check('B - sha256 ausente -> SKIP_UNSAFE/MANIFEST_SHA256_AUSENTE', r.action === 'SKIP_UNSAFE' && r.reason.startsWith('MANIFEST_SHA256_AUSENTE')));
+  }
+
+  // ---- C. sha256 invalido (formato estrutural errado, mas nao vazio) -> SKIP_UNSAFE/MANIFEST_SHA256_INVALIDO ----
+  for (const shaInvalido of ['abc123', SHA_VALIDO_A.slice(0, 63), `${SHA_VALIDO_A.slice(0, 63)}g`]) {
+    const manifest = { 'vendas-auto-20260801-000005.xls': { archivedAt: new Date(AGORA_MS - 31 * UM_DIA_MS).toISOString(), sha256: shaInvalido } };
+    const r = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260801-000005.xls', manifest, agoraMs: AGORA_MS, deleteAfterDays: 30 });
+    registrar(check(`C - sha256 invalido ("${shaInvalido}") -> SKIP_UNSAFE/MANIFEST_SHA256_INVALIDO`, r.action === 'SKIP_UNSAFE' && r.reason.startsWith('MANIFEST_SHA256_INVALIDO')));
+  }
+
+  // ---- B2. sha256 somente espacos -> tratado como AUSENTE (mesmo criterio de blank de ehPlaceholder), nao INVALIDO ----
+  {
+    const manifest = { 'vendas-auto-20260801-000008.xls': { archivedAt: new Date(AGORA_MS - 31 * UM_DIA_MS).toISOString(), sha256: '   ' } };
+    const r = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260801-000008.xls', manifest, agoraMs: AGORA_MS, deleteAfterDays: 30 });
+    registrar(check('B2 - sha256 somente espacos -> SKIP_UNSAFE/MANIFEST_SHA256_AUSENTE', r.action === 'SKIP_UNSAFE' && r.reason.startsWith('MANIFEST_SHA256_AUSENTE')));
+  }
+
+  // ---- I. formato legado hipotetico (string ISO pura, sem sha256) - nao existe nenhum manifesto real/legado
+  // nesta instalacao (verificado antes desta mudanca); mesmo assim, a leitura tolera o formato antigo sem
+  // lancar, mas NUNCA o trata como completo. ----
+  {
+    const manifest = { 'vendas-auto-20260801-000006.xls': new Date(AGORA_MS - 31 * UM_DIA_MS).toISOString() };
+    let lancou = false;
+    let r;
+    try {
+      r = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260801-000006.xls', manifest, agoraMs: AGORA_MS, deleteAfterDays: 30 });
+    } catch (erro) {
+      lancou = true;
+    }
+    registrar(check('I - formato legado (string ISO pura) nao lanca excecao', !lancou));
+    registrar(check('I - formato legado (string ISO pura) -> sempre SKIP_UNSAFE/MANIFEST_SHA256_AUSENTE (nunca aceito como completo)', !!r && r.action === 'SKIP_UNSAFE' && r.reason.startsWith('MANIFEST_SHA256_AUSENTE')));
+  }
+
+  // ---- J. manifesto corrompido (entrada nem string nem objeto util) -> fail-closed, nunca lanca ----
+  for (const entradaCorrompida of [42, ['x'], true]) {
+    const manifest = { 'vendas-auto-20260801-000007.xls': entradaCorrompida };
+    let lancou = false;
+    let r;
+    try {
+      r = avaliarArquivoArchive({ nomeArquivo: 'vendas-auto-20260801-000007.xls', manifest, agoraMs: AGORA_MS, deleteAfterDays: 30 });
+    } catch (erro) {
+      lancou = true;
+    }
+    registrar(check(`J - manifesto corrompido (${JSON.stringify(entradaCorrompida)}) nao lanca excecao`, !lancou));
+    registrar(check(`J - manifesto corrompido (${JSON.stringify(entradaCorrompida)}) -> SKIP_UNSAFE`, !!r && r.action === 'SKIP_UNSAFE'));
   }
 
   // ---- T14/T15: dry-run nunca muta nada (garantido estruturalmente - nao existe fs.rename/unlink no modulo) ----
