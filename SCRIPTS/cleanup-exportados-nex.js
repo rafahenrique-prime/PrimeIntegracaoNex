@@ -23,12 +23,24 @@
  * Uso:
  *   node SCRIPTS/cleanup-exportados-nex.js --dry-run
  *   node SCRIPTS/cleanup-exportados-nex.js --move-real
+ *   node SCRIPTS/cleanup-exportados-nex.js --move-real --file vendas-auto-YYYYMMDD-HHMMSS.xls
  *
  * Sem NENHUM dos dois, ou com AMBOS ao mesmo tempo, o script recusa rodar
  * (fail-closed) - nunca assume um modo padrao "silencioso", nunca tenta
  * adivinhar qual dos dois o chamador queria. Nenhuma Task Scheduler,
  * servico ou runner de producao passa --move-real - e' 100% manual,
  * nunca wireado automaticamente.
+ *
+ * Cleanup V2 Fase 1.1 - seletor explicito `--file <nome>`: restringe
+ * --move-real a avaliar SOMENTE aquele nome canonico (nunca forca
+ * elegibilidade - o arquivo ainda passa por TODOS os gates normais,
+ * inalterados; se nao for WOULD_ARCHIVE, nada e' movido). So' aceito
+ * junto com --move-real - `--dry-run --file` e' REJEITADO explicitamente
+ * (decisao deliberada: --dry-run continua sempre escaneando TODO o
+ * diretorio; filtra-lo tambem duplicaria a logica de selecao em dois
+ * caminhos de codigo por um ganho minimo, ja que --dry-run nunca muta
+ * nada de qualquer forma). Sem --file, --move-real mantem o
+ * comportamento atual (avalia TODOS os elegiveis de EXPORTADOS/).
  */
 
 const fs = require('fs');
@@ -127,6 +139,44 @@ function liberarLockMoveReal(lockPath) {
   } catch (erro) {
     if (erro.code !== 'ENOENT') throw erro;
   }
+}
+
+/**
+ * Cleanup V2 Fase 1.1 - seletor explicito de UM arquivo para --move-real
+ * (nunca --dry-run - ver decisao no cabecalho do arquivo e em main()). So'
+ * aceita o nome canonico EXATO `vendas-auto-YYYYMMDD-HHMMSS.xls` - a MESMA
+ * regex ja homologada de nomeEhVendasAutoValido, ancorada com ^...$. Como
+ * essa regex e' ancorada e so' contem digitos/literais fixos, qualquer
+ * caminho absoluto, "../", separador de diretorio ("/" ou "\"), ou nome
+ * fora do padrao e' ESTRUTURALMENTE impossivel de bater com ela - uma
+ * UNICA checagem cobre todos esses casos, sem duplicar a logica de
+ * containment que ja existe, separadamente, em
+ * moverArquivoParaArchiveReal::containmentDireto (defesa em profundidade
+ * ja homologada, nao repetida aqui). O seletor NUNCA forca elegibilidade:
+ * so decide QUAL nome entra em `nomesSource`; o arquivo resultante ainda
+ * passa por avaliarArquivoVendasAuto (gates 1-6) e, se WOULD_ARCHIVE,
+ * moverArquivoParaArchiveReal (gates 7-12+ROOT) - nenhum gate existente
+ * foi alterado.
+ * @param {string[]} args - process.argv.slice(2)
+ * @returns {{presente:false} | {presente:true, valido:false, motivo:string} | {presente:true, valido:true, nomeArquivo:string}}
+ */
+function extrairSeletorArquivo(args) {
+  const indices = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--file') indices.push(i);
+  }
+  if (indices.length === 0) return { presente: false };
+  if (indices.length > 1) {
+    return { presente: true, valido: false, motivo: 'MULTIPLOS_FILE_REJEITADOS (--file so pode ser passado uma unica vez)' };
+  }
+  const valor = args[indices[0] + 1];
+  if (valor === undefined || valor === '' || valor.startsWith('--')) {
+    return { presente: true, valido: false, motivo: 'FILE_VAZIO_OU_AUSENTE (--file precisa ser seguido de um nome de arquivo)' };
+  }
+  if (!nomeEhVendasAutoValido(valor)) {
+    return { presente: true, valido: false, motivo: `FILE_NOME_NAO_CANONICO (esperado exatamente vendas-auto-YYYYMMDD-HHMMSS.xls, recebido: "${valor}")` };
+  }
+  return { presente: true, valido: true, nomeArquivo: valor };
 }
 
 function listarCandidatos(diretorio) {
@@ -244,8 +294,15 @@ async function executarDryRun(agoraMs) {
  * moverArquivoParaArchiveReal (gates 7-12, mutacao real). Nunca avalia
  * EXPORT_ARCHIVE para delete - DELETE real nao existe nesta fase, em
  * nenhum modo.
+ * @param {number} agoraMs
+ * @param {string|null} [nomeArquivoSelecionado] - Cleanup V2 Fase 1.1:
+ *   quando presente (vindo de --file, ja validado por
+ *   extrairSeletorArquivo), restringe `nomesSource` a SOMENTE esse nome -
+ *   nenhum outro arquivo de EXPORTADOS/ e' sequer listado/avaliado. Quando
+ *   ausente/null, comportamento identico ao anterior a esta mudanca
+ *   (lista TODO o diretorio via listarCandidatos).
  */
-async function executarMoveReal(agoraMs) {
+async function executarMoveReal(agoraMs, nomeArquivoSelecionado) {
   // ---- GAP 4: lock exclusivo ANTES de qualquer leitura de manifesto ou
   // mutacao - duas execucoes de --move-real nunca podem correr juntas. ----
   const lock = adquirirLockMoveReal();
@@ -260,6 +317,11 @@ async function executarMoveReal(agoraMs) {
     return;
   }
 
+  if (nomeArquivoSelecionado) {
+    // eslint-disable-next-line no-console
+    console.log(`cleanup-exportados-nex: --file ativo - avaliando SOMENTE "${nomeArquivoSelecionado}" (nenhum outro arquivo de EXPORTADOS/ e' listado/avaliado nesta execucao).`);
+  }
+
   try {
     const checkpoint = new CheckpointSqlite(DB_PATH);
     const outbox = new OutboxLocal(DB_PATH);
@@ -267,7 +329,9 @@ async function executarMoveReal(agoraMs) {
     let nomesSource = [];
     const resultados = [];
     try {
-      nomesSource = listarCandidatos(SOURCE_DIR) || [];
+      nomesSource = nomeArquivoSelecionado
+        ? [nomeArquivoSelecionado]
+        : (listarCandidatos(SOURCE_DIR) || []);
       let manifestAtual = lerManifestArchive();
 
       for (const nome of nomesSource) {
@@ -373,6 +437,7 @@ async function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
   const moveReal = args.includes('--move-real');
+  const seletor = extrairSeletorArquivo(args);
 
   if (dryRun && moveReal) {
     // eslint-disable-next-line no-console
@@ -390,12 +455,28 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  if (seletor.presente && !seletor.valido) {
+    // eslint-disable-next-line no-console
+    console.error(`cleanup-exportados-nex: --file invalido - ${seletor.motivo}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (dryRun && seletor.presente) {
+    // eslint-disable-next-line no-console
+    console.error(
+      'cleanup-exportados-nex: --file so e suportado junto com --move-real nesta fase (Cleanup V2 Fase 1.1) - ' +
+        '--dry-run continua sempre escaneando TODO o diretorio, nunca filtra por --file. ' +
+        'Rode --dry-run sem --file, ou --move-real --file <nome>.',
+    );
+    process.exitCode = 1;
+    return;
+  }
 
   const agoraMs = Date.now();
   if (dryRun) {
     await executarDryRun(agoraMs);
   } else {
-    await executarMoveReal(agoraMs);
+    await executarMoveReal(agoraMs, seletor.presente ? seletor.nomeArquivo : null);
   }
 }
 
@@ -417,4 +498,5 @@ module.exports = {
   adquirirLockMoveReal,
   liberarLockMoveReal,
   LOCK_PATH,
+  extrairSeletorArquivo,
 };

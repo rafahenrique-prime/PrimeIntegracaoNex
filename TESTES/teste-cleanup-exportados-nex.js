@@ -31,6 +31,7 @@ const {
   lerManifestArchive,
   adquirirLockMoveReal,
   liberarLockMoveReal,
+  extrairSeletorArquivo,
 } = require(path.join(PROJETO, 'SCRIPTS', 'cleanup-exportados-nex'));
 
 function check(desc, cond) {
@@ -1039,6 +1040,296 @@ async function main() {
     const flagsIncompativeis = spawnSync(process.execPath, [cliPath, '--dry-run', '--move-real'], { encoding: 'utf8' });
     registrar(check('M15 - CLI com --dry-run e --move-real juntos -> exit code 1', flagsIncompativeis.status === 1));
     registrar(check('M15 - CLI flags incompativeis -> mensagem explicita', /incompativeis/.test(flagsIncompativeis.stderr)));
+  }
+
+  // ================================================================
+  // Cleanup V2 Fase 1.1 - seletor explicito --file. extrairSeletorArquivo
+  // e' pura (nenhum acesso a filesystem) - testada diretamente aqui.
+  // ================================================================
+  registrar(check('SEL-P1 - sem --file -> presente=false', extrairSeletorArquivo(['--move-real']).presente === false));
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file', 'vendas-auto-20260101-000000.xls']);
+    registrar(check('SEL-P2 - --file com nome canonico valido -> presente=true, valido=true, nomeArquivo correto', r.presente === true && r.valido === true && r.nomeArquivo === 'vendas-auto-20260101-000000.xls'));
+  }
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file']);
+    registrar(check('SEL-P3 - --file sem valor (ultimo argumento) -> invalido/FILE_VAZIO_OU_AUSENTE', r.presente === true && r.valido === false && r.motivo.startsWith('FILE_VAZIO_OU_AUSENTE')));
+  }
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file', '']);
+    registrar(check('SEL-P4 - --file com valor vazio ("") -> invalido/FILE_VAZIO_OU_AUSENTE', r.presente === true && r.valido === false && r.motivo.startsWith('FILE_VAZIO_OU_AUSENTE')));
+  }
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file', '--outra-flag']);
+    registrar(check('SEL-P5 - --file seguido de algo comecando com "--" -> invalido/FILE_VAZIO_OU_AUSENTE', r.presente === true && r.valido === false && r.motivo.startsWith('FILE_VAZIO_OU_AUSENTE')));
+  }
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file', 'a.xls', '--file', 'b.xls']);
+    registrar(check('SEL-P6 - multiplos --file -> invalido/MULTIPLOS_FILE_REJEITADOS', r.presente === true && r.valido === false && r.motivo.startsWith('MULTIPLOS_FILE_REJEITADOS')));
+  }
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file', '../evil.xls']);
+    registrar(check('SEL-P7 - traversal (../) -> invalido/FILE_NOME_NAO_CANONICO', r.presente === true && r.valido === false && r.motivo.startsWith('FILE_NOME_NAO_CANONICO')));
+  }
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file', 'C:\\Nex\\PrimeIntegracaoNex\\EXPORTADOS\\vendas-auto-20260101-000000.xls']);
+    registrar(check('SEL-P8 - caminho absoluto -> invalido/FILE_NOME_NAO_CANONICO', r.presente === true && r.valido === false && r.motivo.startsWith('FILE_NOME_NAO_CANONICO')));
+  }
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file', 'sub/vendas-auto-20260101-000000.xls']);
+    registrar(check('SEL-P9 - subdiretorio (com "/") -> invalido/FILE_NOME_NAO_CANONICO', r.presente === true && r.valido === false && r.motivo.startsWith('FILE_NOME_NAO_CANONICO')));
+  }
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file', 'sub\\vendas-auto-20260101-000000.xls']);
+    registrar(check('SEL-P10 - subdiretorio (com "\\\\") -> invalido/FILE_NOME_NAO_CANONICO', r.presente === true && r.valido === false && r.motivo.startsWith('FILE_NOME_NAO_CANONICO')));
+  }
+  {
+    const r = extrairSeletorArquivo(['--move-real', '--file', 'Exportar-28-08.xls']);
+    registrar(check('SEL-P11 - nome fora do padrao canonico -> invalido/FILE_NOME_NAO_CANONICO', r.presente === true && r.valido === false && r.motivo.startsWith('FILE_NOME_NAO_CANONICO')));
+  }
+
+  // ---- Guarda estrutural: main() so' chama executarMoveReal com o
+  // nomeArquivo ja validado (nunca passa um seletor invalido adiante). ----
+  {
+    const fonteCli = fs.readFileSync(path.join(PROJETO, 'SCRIPTS', 'cleanup-exportados-nex.js'), 'utf8');
+    registrar(check('SEL-P12 - main() rejeita seletor invalido ANTES de chamar executarMoveReal (guarda por ordem de codigo)', fonteCli.indexOf('seletor.presente && !seletor.valido') < fonteCli.indexOf('await executarMoveReal(')));
+  }
+
+  /**
+   * Cleanup V2 Fase 1.1 - escreve um arquivo real no sandbox com um mtime
+   * controlado (via fs.utimesSync), para simular "idade" sem depender de
+   * relogio real nem de fsImpl fake (moverArquivoParaArchiveReal/
+   * avaliarArquivoVendasAuto aqui usam SEMPRE o `fs` real, apontando para
+   * o sandbox em os.tmpdir()).
+   */
+  function escreverArquivoComIdade(caminho, buffer, idadeDiasDesejada, agoraMs) {
+    fs.writeFileSync(caminho, buffer);
+    const mtimeSegundos = (agoraMs - idadeDiasDesejada * UM_DIA_MS) / 1000;
+    fs.utimesSync(caminho, mtimeSegundos, mtimeSegundos);
+  }
+
+  /** Descobre eventId+contentHash REAIS de um buffer de vendas, pelo MESMO
+   * caminho de codigo do orquestrador (mesmo padrao ja usado em T2/T4-6). */
+  function calcularEventoRealDeBuffer(buffer) {
+    const { lerExportVendas } = require(path.join(PROJETO, 'SERVICO', 'leitor-export-vendas'));
+    const { normalizarVendaNex } = require(path.join(PROJETO, 'SRC', 'normalizar-venda-nex'));
+    const { gerarChaveIdentidadeTransacaoNex } = require(path.join(PROJETO, 'SRC', 'identidade-transacao-nex'));
+    const { classificarVenda } = require(path.join(PROJETO, 'SRC', 'classificador-evento-venda-nex'));
+    const { gerarEventosVenda } = require(path.join(PROJETO, 'SRC', 'gerador-evento-venda-nex'));
+    const { linhas } = lerExportVendas(buffer, { nomeArquivo: 'x.xls' });
+    const vn = normalizarVendaNex(linhas[0]);
+    const ident = gerarChaveIdentidadeTransacaoNex(vn);
+    const classif = classificarVenda(vn);
+    const eventos = gerarEventosVenda(vn, ident.identityKey, null, classif);
+    return { eventId: eventos[0].eventId, contentHash: calcularContentHashEvento(eventos[0]) };
+  }
+
+  /** Registra+confirma (CREATED, terminal) o evento real de um buffer no
+   * checkpoint em memoria - torna o arquivo elegivel (WOULD_ARCHIVE). */
+  async function protegerNoCheckpoint(buffer, checkpoint) {
+    const { eventId, contentHash } = calcularEventoRealDeBuffer(buffer);
+    await checkpoint.registrarEvento({ eventId, contentHash, status: 'PROCESSADO_LOCALMENTE' });
+    await checkpoint.atualizarEvento(eventId, { result: 'CREATED', httpStatus: 200 });
+  }
+
+  /**
+   * Replica MINIMA do NUCLEO de executarMoveReal (SCRIPTS/cleanup-exportados-nex.js):
+   * nomesSource (via seletor OU listagem completa) -> por arquivo,
+   * avaliarArquivoVendasAuto -> se WOULD_ARCHIVE, moverArquivoParaArchiveReal -
+   * usando as MESMAS funcoes reais importadas do SERVICO (nunca
+   * reimplementadas), apontando para um sandbox em os.tmpdir() e
+   * checkpoint/outbox EM MEMORIA - nunca o DB/EXPORTADOS/EXPORT_ARCHIVE
+   * reais. A guarda estrutural SEL5 (abaixo) confirma que o CODIGO REAL
+   * usa a MESMA construcao de nomesSource testada aqui.
+   */
+  async function executarMoveRealSandbox(opcoes) {
+    const { exportadosDir, archiveDir, manifestPath, checkpoint, outbox, agoraMs, nomeArquivoSelecionado } = opcoes;
+    const nomesSource = nomeArquivoSelecionado
+      ? [nomeArquivoSelecionado]
+      : fs.readdirSync(exportadosDir);
+    let manifestAtual = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : {};
+    const resultados = [];
+    for (const nome of nomesSource) {
+      const caminho = path.join(exportadosDir, nome);
+      // eslint-disable-next-line no-await-in-loop
+      const decisao = await avaliarArquivoVendasAuto({
+        caminho, nomeArquivo: nome, fsImpl: fs, checkpoint, outbox, agoraMs, sleepImpl: sleepImediato,
+      });
+      if (decisao.action !== 'WOULD_ARCHIVE') {
+        resultados.push(decisao);
+        continue; // eslint-disable-line no-continue
+      }
+      const resultadoMove = moverArquivoParaArchiveReal({
+        nomeArquivo: nome, exportadosDir, archiveDir, manifestPath,
+        sha256Esperado: decisao.sha256, manifestAtual, agoraMs,
+      });
+      if (resultadoMove.manifestAtualizado) manifestAtual = resultadoMove.manifestAtualizado;
+      resultados.push(Object.assign({ decisaoOriginal: decisao.action }, resultadoMove));
+    }
+    return resultados;
+  }
+
+  // ---- SEL0: sem seletor, comportamento padrao preservado (ambos os elegiveis processados) ----
+  {
+    const sb = criarSandboxMoveReal();
+    const checkpoint = new CheckpointSqlite(':memory:');
+    const outbox = new OutboxLocal(':memory:');
+    const agoraTeste = Date.now();
+    const nomeA = 'vendas-auto-20260101-100000.xls';
+    const nomeB = 'vendas-auto-20260101-110000.xls';
+    const bufferA = construirXlsVendasBuffer([{ numero: '96001', debitado: '11,00' }]);
+    const bufferB = construirXlsVendasBuffer([{ numero: '96002', debitado: '22,00' }]);
+    escreverArquivoComIdade(path.join(sb.exportadosDir, nomeA), bufferA, 10, agoraTeste);
+    escreverArquivoComIdade(path.join(sb.exportadosDir, nomeB), bufferB, 10, agoraTeste);
+    await protegerNoCheckpoint(bufferA, checkpoint);
+    await protegerNoCheckpoint(bufferB, checkpoint);
+
+    const resultados = await executarMoveRealSandbox({
+      exportadosDir: sb.exportadosDir, archiveDir: sb.archiveDir, manifestPath: sb.manifestPath,
+      checkpoint, outbox, agoraMs: agoraTeste, nomeArquivoSelecionado: null,
+    });
+    registrar(check('SEL0 - sem seletor, ambos elegiveis sao processados (DEFAULT_MOVE_REAL_BEHAVIOR_PRESERVED)', resultados.length === 2 && resultados.every((r) => r.action === 'ARCHIVED_REAL')));
+    registrar(check('SEL0 - ambos os arquivos foram movidos para o archive', fs.existsSync(path.join(sb.archiveDir, nomeA)) && fs.existsSync(path.join(sb.archiveDir, nomeB))));
+    checkpoint.fechar();
+    outbox.fechar();
+    limparSandbox(sb.raiz);
+  }
+
+  // ---- SEL1: seletor restringe a EXATAMENTE 1 arquivo - o segundo elegivel NUNCA e' tocado ----
+  {
+    const sb = criarSandboxMoveReal();
+    const checkpoint = new CheckpointSqlite(':memory:');
+    const outbox = new OutboxLocal(':memory:');
+    const agoraTeste = Date.now();
+    const nomeA = 'vendas-auto-20260101-120000.xls';
+    const nomeB = 'vendas-auto-20260101-130000.xls';
+    const bufferA = construirXlsVendasBuffer([{ numero: '96003', debitado: '33,00' }]);
+    const bufferB = construirXlsVendasBuffer([{ numero: '96004', debitado: '44,00' }]);
+    escreverArquivoComIdade(path.join(sb.exportadosDir, nomeA), bufferA, 10, agoraTeste);
+    escreverArquivoComIdade(path.join(sb.exportadosDir, nomeB), bufferB, 10, agoraTeste);
+    await protegerNoCheckpoint(bufferA, checkpoint);
+    await protegerNoCheckpoint(bufferB, checkpoint);
+
+    const resultados = await executarMoveRealSandbox({
+      exportadosDir: sb.exportadosDir, archiveDir: sb.archiveDir, manifestPath: sb.manifestPath,
+      checkpoint, outbox, agoraMs: agoraTeste, nomeArquivoSelecionado: nomeA,
+    });
+    registrar(check('SEL1 - seletor restringe a EXATAMENTE 1 resultado (MOVE_REAL_WOULD_TOUCH_EXACTLY_ONE_FILE)', resultados.length === 1 && resultados[0].filename === nomeA));
+    registrar(check('SEL1 - arquivo selecionado (A) movido com sucesso', resultados[0].action === 'ARCHIVED_REAL'));
+    registrar(check('SEL1 - segundo arquivo elegivel (B) NAO tocado - source preservado (SECOND_ELIGIBLE_FILE_UNTOUCHED)', fs.existsSync(path.join(sb.exportadosDir, nomeB))));
+    registrar(check('SEL1 - segundo arquivo elegivel (B) NUNCA aparece no archive', !fs.existsSync(path.join(sb.archiveDir, nomeB))));
+    checkpoint.fechar();
+    outbox.fechar();
+    limparSandbox(sb.raiz);
+  }
+
+  // ---- SEL2: arquivo selecionado e' KEEP (idade insuficiente) -> zero mutacao, gate normal preservado ----
+  {
+    const sb = criarSandboxMoveReal();
+    const checkpoint = new CheckpointSqlite(':memory:');
+    const outbox = new OutboxLocal(':memory:');
+    const agoraTeste = Date.now();
+    const nome = 'vendas-auto-20260101-140000.xls';
+    const buffer = construirXlsVendasBuffer([{ numero: '96005', debitado: '55,00' }]);
+    escreverArquivoComIdade(path.join(sb.exportadosDir, nome), buffer, 1, agoraTeste); // so 1 dia -> KEEP
+
+    const resultados = await executarMoveRealSandbox({
+      exportadosDir: sb.exportadosDir, archiveDir: sb.archiveDir, manifestPath: sb.manifestPath,
+      checkpoint, outbox, agoraMs: agoraTeste, nomeArquivoSelecionado: nome,
+    });
+    registrar(check('SEL2 - arquivo selecionado KEEP (idade insuficiente) -> reportado corretamente, seletor NAO forca elegibilidade (SELECTOR_BYPASSES_ELIGIBILITY_GATES=NO)', resultados.length === 1 && resultados[0].action === 'KEEP'));
+    registrar(check('SEL2 - source preservado, zero mutacao', fs.existsSync(path.join(sb.exportadosDir, nome))));
+    registrar(check('SEL2 - EXPORT_ARCHIVE nunca criado', !fs.existsSync(sb.archiveDir)));
+    checkpoint.fechar();
+    outbox.fechar();
+    limparSandbox(sb.raiz);
+  }
+
+  // ---- SEL3: arquivo selecionado e' SKIP_UNSAFE (checkpoint ausente) -> zero mutacao, gate normal preservado ----
+  {
+    const sb = criarSandboxMoveReal();
+    const checkpoint = new CheckpointSqlite(':memory:');
+    const outbox = new OutboxLocal(':memory:');
+    const agoraTeste = Date.now();
+    const nome = 'vendas-auto-20260101-150000.xls';
+    const buffer = construirXlsVendasBuffer([{ numero: '96006', debitado: '66,00' }]);
+    escreverArquivoComIdade(path.join(sb.exportadosDir, nome), buffer, 10, agoraTeste);
+    // Deliberadamente NAO registra checkpoint -> CHECKPOINT_AUSENTE.
+
+    const resultados = await executarMoveRealSandbox({
+      exportadosDir: sb.exportadosDir, archiveDir: sb.archiveDir, manifestPath: sb.manifestPath,
+      checkpoint, outbox, agoraMs: agoraTeste, nomeArquivoSelecionado: nome,
+    });
+    registrar(check('SEL3 - arquivo selecionado SKIP_UNSAFE (checkpoint ausente) -> reportado corretamente, seletor NAO forca elegibilidade', resultados.length === 1 && resultados[0].action === 'SKIP_UNSAFE' && resultados[0].reason === 'CHECKPOINT_AUSENTE'));
+    registrar(check('SEL3 - source preservado, zero mutacao', fs.existsSync(path.join(sb.exportadosDir, nome))));
+    registrar(check('SEL3 - EXPORT_ARCHIVE nunca criado', !fs.existsSync(sb.archiveDir)));
+    checkpoint.fechar();
+    outbox.fechar();
+    limparSandbox(sb.raiz);
+  }
+
+  // ---- SEL4: arquivo selecionado NAO existe no disco -> fail-closed via o MESMO gate ja existente (ARQUIVO_INACESSIVEL), nao um gate novo ----
+  {
+    const sb = criarSandboxMoveReal();
+    const checkpoint = new CheckpointSqlite(':memory:');
+    const outbox = new OutboxLocal(':memory:');
+    const agoraTeste = Date.now();
+    const nomeInexistente = 'vendas-auto-20260101-160000.xls'; // NUNCA criado neste sandbox
+
+    const resultados = await executarMoveRealSandbox({
+      exportadosDir: sb.exportadosDir, archiveDir: sb.archiveDir, manifestPath: sb.manifestPath,
+      checkpoint, outbox, agoraMs: agoraTeste, nomeArquivoSelecionado: nomeInexistente,
+    });
+    registrar(check('SEL4 - arquivo selecionado inexistente -> SKIP_UNSAFE/ARQUIVO_INACESSIVEL (fail-closed, gate existente reutilizado sem alteracao)', resultados.length === 1 && resultados[0].action === 'SKIP_UNSAFE' && resultados[0].reason.startsWith('ARQUIVO_INACESSIVEL')));
+    registrar(check('SEL4 - EXPORT_ARCHIVE nunca criado', !fs.existsSync(sb.archiveDir)));
+    checkpoint.fechar();
+    outbox.fechar();
+    limparSandbox(sb.raiz);
+  }
+
+  // ---- SEL5 (guarda estrutural): o CODIGO REAL de executarMoveReal usa a
+  // MESMA construcao ternaria de nomesSource exercitada em SEL0-SEL4 -
+  // ponte entre a replica em sandbox (acima) e o codigo realmente
+  // shippado (que nao pode ser executado em sandbox, pois usa SOURCE_DIR/
+  // ARCHIVE_DIR/DB_PATH reais fixos no modulo). ----
+  {
+    const fonteCli = fs.readFileSync(path.join(PROJETO, 'SCRIPTS', 'cleanup-exportados-nex.js'), 'utf8');
+    const padrao = /nomesSource\s*=\s*nomeArquivoSelecionado\s*\?\s*\[nomeArquivoSelecionado\]\s*:\s*\(listarCandidatos\(SOURCE_DIR\)\s*\|\|\s*\[\]\)/;
+    registrar(check('SEL5 - executarMoveReal real usa a MESMA construcao de nomesSource testada em sandbox (SEL0-SEL4)', padrao.test(fonteCli)));
+  }
+
+  // ================================================================
+  // Testes de CLI (subprocess real, seguro) - todas as combinacoes abaixo
+  // sao REJEITADAS (exit 1) ANTES de main() sequer chamar executarMoveReal/
+  // executarDryRun - nenhuma toca EXPORTADOS/EXPORT_ARCHIVE/DB/lock reais.
+  // ================================================================
+  {
+    const { spawnSync } = require('child_process');
+    const cliPath = path.join(PROJETO, 'SCRIPTS', 'cleanup-exportados-nex.js');
+
+    const traversal = spawnSync(process.execPath, [cliPath, '--move-real', '--file', '../evil.xls'], { encoding: 'utf8' });
+    registrar(check('SEL-CLI1 - --file com traversal (../) -> exit 1, rejeitado ANTES de tocar qualquer diretorio real (PATH_TRAVERSAL_REJECTED)', traversal.status === 1 && /FILE_NOME_NAO_CANONICO/.test(traversal.stderr)));
+
+    const absoluto = spawnSync(process.execPath, [cliPath, '--move-real', '--file', 'C:\\Nex\\PrimeIntegracaoNex\\EXPORTADOS\\vendas-auto-20260101-000000.xls'], { encoding: 'utf8' });
+    registrar(check('SEL-CLI2 - --file com caminho absoluto -> exit 1, rejeitado (ABSOLUTE_PATH_REJECTED)', absoluto.status === 1 && /FILE_NOME_NAO_CANONICO/.test(absoluto.stderr)));
+
+    const subdiretorio = spawnSync(process.execPath, [cliPath, '--move-real', '--file', 'sub/vendas-auto-20260101-000000.xls'], { encoding: 'utf8' });
+    registrar(check('SEL-CLI3 - --file com subdiretorio -> exit 1, rejeitado', subdiretorio.status === 1 && /FILE_NOME_NAO_CANONICO/.test(subdiretorio.stderr)));
+
+    const naoCanonico = spawnSync(process.execPath, [cliPath, '--move-real', '--file', 'Exportar-28-08.xls'], { encoding: 'utf8' });
+    registrar(check('SEL-CLI4 - --file com nome fora do padrao canonico -> exit 1, rejeitado (NON_CANONICAL_FILENAME_REJECTED)', naoCanonico.status === 1 && /FILE_NOME_NAO_CANONICO/.test(naoCanonico.stderr)));
+
+    const multiplos = spawnSync(process.execPath, [cliPath, '--move-real', '--file', 'vendas-auto-20260101-000000.xls', '--file', 'vendas-auto-20260101-000001.xls'], { encoding: 'utf8' });
+    registrar(check('SEL-CLI5 - multiplos --file -> exit 1, rejeitado (MULTIPLE_FILE_ARGS_REJECTED)', multiplos.status === 1 && /MULTIPLOS_FILE_REJEITADOS/.test(multiplos.stderr)));
+
+    const semValor = spawnSync(process.execPath, [cliPath, '--move-real', '--file'], { encoding: 'utf8' });
+    registrar(check('SEL-CLI6 - --file sem valor (ultimo argumento) -> exit 1, rejeitado', semValor.status === 1 && /FILE_VAZIO_OU_AUSENTE/.test(semValor.stderr)));
+
+    const dryRunComFile = spawnSync(process.execPath, [cliPath, '--dry-run', '--file', 'vendas-auto-20260101-000000.xls'], { encoding: 'utf8' });
+    registrar(check('SEL-CLI7 - --dry-run + --file -> exit 1, rejeitado explicitamente (decisao deliberada, ver header do arquivo)', dryRunComFile.status === 1 && /so e suportado junto com --move-real/.test(dryRunComFile.stderr)));
+
+    const valorEhFlag = spawnSync(process.execPath, [cliPath, '--move-real', '--file', '--nao-e-um-nome'], { encoding: 'utf8' });
+    registrar(check('SEL-CLI8 - --file seguido de algo comecando com "--" (nao e um nome de arquivo) -> exit 1, rejeitado', valorEhFlag.status === 1 && /FILE_VAZIO_OU_AUSENTE/.test(valorEhFlag.stderr)));
   }
 
   console.log('\n' + (todosPassaram ? 'TODOS OS TESTES PASSARAM' : 'ALGUM TESTE FALHOU'));
