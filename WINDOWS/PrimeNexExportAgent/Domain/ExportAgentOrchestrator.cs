@@ -133,7 +133,13 @@ public sealed class ExportAgentOrchestrator
                 var safeState = _nexWindowInspector.CheckSafeState(target);
                 if (!safeState.Passed)
                 {
-                    Log(runId, AgentStage.UnsafeState, safeState.ErrorCode);
+                    // Hybrid V3 - observabilidade minima: safeState.Reason ja
+                    // carrega o motivo especifico (qual gate G3-G6 falhou,
+                    // ex.: "aba 'Vendas' nao encontrada", "janela top-level
+                    // nao reconhecida") - antes descartado silenciosamente
+                    // aqui (unico call-site de UnsafeState que ainda nao
+                    // repassava reason). Nenhuma mudanca de decisao/gate.
+                    Log(runId, AgentStage.UnsafeState, safeState.ErrorCode, reason: safeState.Reason);
                     return AgentRunResult.Stop(runId, AgentStage.UnsafeState, safeState.ErrorCode);
                 }
                 Log(runId, AgentStage.SafeStateValidated);

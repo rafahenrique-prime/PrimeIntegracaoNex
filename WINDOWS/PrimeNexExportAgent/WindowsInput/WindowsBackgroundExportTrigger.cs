@@ -180,14 +180,24 @@ public sealed class WindowsBackgroundExportTrigger : IInputSender
             throw new InvalidOperationException($"WM_COMMAND/BN_CLICKED falhou (LastError={send.lastError}) - nenhuma segunda tentativa.");
         }
 
+        // Hybrid V3 - observabilidade minima: marca de tempo PURA (mesmo
+        // _clock ja injetado e usado por WaitForSinglePopup logo abaixo,
+        // nenhuma chamada nova a relogio de sistema) para medir, so para
+        // diagnostico, quanto tempo se passa entre o WM_COMMAND concluido e
+        // a avaliacao do popup - nunca usada para decisao/timeout/retry.
+        var wmCommandCompletedAt = _clock.Now;
+
         var popupHwnd = WaitForSinglePopup(target.ProcessId);
         if (popupHwnd == 0)
         {
             throw new InvalidOperationException($"popup '{PopupClassName}' nao apareceu (ou apareceu ambiguo) apos o WM_COMMAND.");
         }
 
-        var exportElement = FindUniqueElementByName(popupHwnd, ExportItemName, ScanDirection.Vertical)
-            ?? throw new InvalidOperationException($"item '{ExportItemName}' nao localizado de forma inequivoca no popup.");
+        var exportElement = FindUniqueElementByName(popupHwnd, ExportItemName, ScanDirection.Vertical, out var exportarDistinctMatchCount)
+            ?? throw new InvalidOperationException(
+                $"item '{ExportItemName}' nao localizado de forma inequivoca no popup " +
+                $"(popupFound=true, popupHandle=0x{popupHwnd:X}, popupClass='{PopupClassName}', " +
+                $"exportarMatchCount={exportarDistinctMatchCount}, elapsedMsDesdeWmCommand={(_clock.Now - wmCommandCompletedAt).TotalMilliseconds:F0}).");
 
         var role = _msaa.GetRole(exportElement);
         var state = _msaa.GetState(exportElement);
@@ -341,7 +351,7 @@ public sealed class WindowsBackgroundExportTrigger : IInputSender
         var barsContainingAllSales = 0;
         foreach (var barHwnd in barCandidates)
         {
-            if (FindUniqueElementByName(barHwnd, AllSalesItemName, ScanDirection.Horizontal) is not null)
+            if (FindUniqueElementByName(barHwnd, AllSalesItemName, ScanDirection.Horizontal, out _) is not null)
             {
                 barsContainingAllSales++;
             }
@@ -377,11 +387,23 @@ public sealed class WindowsBackgroundExportTrigger : IInputSender
     /// pos-Probe 13A), e exige EXATAMENTE 1 elemento unico com
     /// Name==`targetName`. Retorna um elemento FRESCO (reobtido no ponto
     /// do candidato unico, nunca reaproveita o handle do scan) ou null se
-    /// RAW=0 ou UNIQUE!=1.</summary>
-    private MsaaElementHandle? FindUniqueElementByName(nint hwnd, string targetName, ScanDirection direction)
+    /// RAW=0 ou UNIQUE!=1.
+    ///
+    /// `distinctMatchCount` (Hybrid V3 - observabilidade minima) expoe a
+    /// MESMA contagem de candidatos distintos ja calculada internamente
+    /// (candidatesByFingerprint.Count) - usada SOMENTE para diagnostico
+    /// pelo chamador (ex.: mensagem de excecao); NUNCA influencia a
+    /// decisao abaixo, que permanece byte-a-byte identica a antes desta
+    /// mudanca (RAW=0 ou UNIQUE!=1 continuam os unicos criterios de
+    /// falha).</summary>
+    private MsaaElementHandle? FindUniqueElementByName(nint hwnd, string targetName, ScanDirection direction, out int distinctMatchCount)
     {
         var rect = _hitTest.GetWindowRectPhysical(hwnd);
-        if (rect is null) return null;
+        if (rect is null)
+        {
+            distinctMatchCount = 0;
+            return null;
+        }
 
         var rawHitCount = 0;
         var candidatesByFingerprint = new Dictionary<string, (int scanX, int scanY)>(StringComparer.Ordinal);
@@ -398,6 +420,8 @@ public sealed class WindowsBackgroundExportTrigger : IInputSender
             var fingerprint = $"{name}|{_msaa.GetRole(element)}|{_msaa.DescribeChildId(element)}|{_msaa.GetLocation(element)}";
             candidatesByFingerprint.TryAdd(fingerprint, (x, y));
         }
+
+        distinctMatchCount = candidatesByFingerprint.Count;
 
         if (rawHitCount == 0 || candidatesByFingerprint.Count != 1)
         {

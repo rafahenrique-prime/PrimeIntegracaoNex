@@ -316,21 +316,42 @@ public sealed class ExportAgentOrchestratorTests
         Assert.Equal(1, fx.InputSender.SendExportShortcutCalls);
     }
 
-    // ---------- N1b. reason ausente continua null (nenhuma regressao) ----------
+    // ---------- N1b. Hybrid V3 (observabilidade minima) - o call-site de
+    // CheckSafeState (UnsafeState) TAMBEM passa reason agora - fecha o gap
+    // que este teste antes documentava como "fora do escopo" da correcao
+    // N1 original. Achado real: incidente de 2026-09-11 onde 2 execucoes
+    // UnsafeState consecutivas (17:55 e 18:25) ficaram com reason=null no
+    // log de producao, exigindo investigacao manual passo a passo para
+    // sequer confirmar QUAL gate G3-G6 tinha bloqueado. Nenhuma mudanca de
+    // decisao/gate - safeState.Reason ja existia, so nao era repassado. ----
     [Fact]
-    public void N1b_LogSemReasonExplicito_EventoContinuaComReasonNulo()
+    public void N1b_CheckSafeStateFalha_ReasonEspecificoDoGatePreservadoNoLog()
     {
         var fx = new OrchestratorFixture();
         fx.NexWindowInspector.SafeStateResult = NexWindowCheckResult.Fail(AgentErrorCode.UnsafeState, "mais de 1 janela top-level");
 
         fx.BuildOrchestrator().Run();
 
-        // O call-site de UnsafeState (fora do escopo desta correcao) nunca
-        // passou `reason` para Log() - deve continuar null, nao regredir
-        // para alguma string vazia ou lancar.
         var failedEvent = fx.Logger.Events.Last();
         Assert.Equal(nameof(AgentStage.UnsafeState), failedEvent.Stage);
-        Assert.Null(failedEvent.Reason);
+        Assert.Equal(nameof(AgentErrorCode.UnsafeState), failedEvent.ErrorCode);
+        Assert.Equal("mais de 1 janela top-level", failedEvent.Reason);
+    }
+
+    // ---------- N1c. Ausencia de reason em outros call-sites que legitimamente
+    // nunca passam reason continua null (nenhuma regressao de schema -
+    // AgentLogEvent.Reason e opcional desde sua criacao). ----
+    [Fact]
+    public void N1c_LogSemReasonExplicito_EventoContinuaComReasonNulo()
+    {
+        var fx = new OrchestratorFixture();
+        fx.Lock.AcquireSucceeds = false;
+
+        fx.BuildOrchestrator().Run();
+
+        var loggedEvent = fx.Logger.Events.Last();
+        Assert.Equal(nameof(AgentStage.SkippedBusy), loggedEvent.Stage);
+        Assert.Null(loggedEvent.Reason);
     }
 
     // ---------- N0. NotForegroundException -> SkippedNotForeground (modo scheduled-safe) ----------

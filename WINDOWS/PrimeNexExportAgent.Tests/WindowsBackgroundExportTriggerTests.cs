@@ -620,8 +620,15 @@ public sealed class WindowsBackgroundExportTriggerTests
     }
 
     // ---------- F. Exportar 0 matches no popup -> FALHA TECNICA ----------
+    // Hybrid V3 (observabilidade minima): a mensagem agora carrega
+    // popupFound/popupHandle/popupClass/exportarMatchCount/elapsedMs -
+    // achado real de incidente onde essa mesma falha (0 matches, ver F)
+    // era indistinguivel de F2 (ambiguo, >1 matches) so' pelo texto antigo
+    // ("nao localizado de forma inequivoca"). Zero mudanca de decisao -
+    // ainda InvalidOperationException, ainda 1 WM_COMMAND, ainda 0
+    // accDoDefaultAction.
     [Fact]
-    public void F_ExportarZeroMatches_LancaFalhaTecnica()
+    public void F_ExportarZeroMatches_LancaFalhaTecnicaComDiagnosticoMatchCountZero()
     {
         var fx = new Fixture();
         fx.Msaa.NamesByWindowPoint.Remove((Popup, 10, 20));
@@ -632,11 +639,18 @@ public sealed class WindowsBackgroundExportTriggerTests
         Assert.Contains("Exportar", ex!.Message);
         Assert.Equal(1, fx.BackgroundClick.SendBnClickedViaWmCommandCalls);
         Assert.Equal(0, fx.Msaa.DoDefaultActionCalls);
+
+        // Novos campos de diagnostico (telemetria pura, nunca influenciam a decisao acima).
+        Assert.Contains("popupFound=true", ex.Message);
+        Assert.Contains($"popupHandle=0x{Popup:X}", ex.Message);
+        Assert.Contains("popupClass='TdxBarSubMenuControl'", ex.Message);
+        Assert.Contains("exportarMatchCount=0", ex.Message);
+        Assert.Contains("elapsedMsDesdeWmCommand=", ex.Message);
     }
 
     // ---------- F2. Exportar >1 matches (ambiguo) no popup -> FALHA TECNICA ----------
     [Fact]
-    public void F2_ExportarAmbiguo_LancaFalhaTecnica()
+    public void F2_ExportarAmbiguo_LancaFalhaTecnicaComDiagnosticoMatchCountDois()
     {
         var fx = new Fixture();
         fx.Msaa.NamesByWindowPoint[(Popup, 10, 35)] = "Exportar";
@@ -647,6 +661,15 @@ public sealed class WindowsBackgroundExportTriggerTests
         Assert.IsType<InvalidOperationException>(ex);
         Assert.Equal(1, fx.BackgroundClick.SendBnClickedViaWmCommandCalls);
         Assert.Equal(0, fx.Msaa.DoDefaultActionCalls);
+
+        // exportarMatchCount=2 e' precisamente o que distingue esta falha
+        // (D - MULTIPLE_EXPORTAR_MATCHES) da falha F (zero matches) - antes
+        // dessa mudanca, os dois cenarios produziam o MESMO texto de erro.
+        Assert.Contains("popupFound=true", ex.Message);
+        Assert.Contains($"popupHandle=0x{Popup:X}", ex.Message);
+        Assert.Contains("popupClass='TdxBarSubMenuControl'", ex.Message);
+        Assert.Contains("exportarMatchCount=2", ex.Message);
+        Assert.Contains("elapsedMsDesdeWmCommand=", ex.Message);
     }
 
     // ---------- G. WM_COMMAND falha (SendMessageTimeout nao completou) -> FALHA TECNICA ----------
