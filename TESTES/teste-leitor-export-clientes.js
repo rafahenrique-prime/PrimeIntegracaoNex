@@ -137,6 +137,50 @@ try {
 todosPassaram &= check('lanca ErroLeituraExportClientes', erro6 instanceof ErroLeituraExportClientes);
 todosPassaram &= check('codigo = colunas_inesperadas', erro6 && erro6.codigo === 'colunas_inesperadas');
 
+// ---------- 7. Telefone/Celular numerico na planilha (F6.16G.1 - fix notacao cientifica) ----------
+// Reproduz estruturalmente os casos reais homologados 823/825/906/911: uma
+// celula de Telefone/Celular armazenada como NUMERO puro no XLS (nao texto)
+// deve ser lida como string decimal completa, nunca em notacao cientifica.
+console.log('\n=== 7. Telefone/Celular numerico: sem notacao cientifica ===');
+
+function semNotacaoCientifica(v) {
+  return !/e\+/i.test(String(v));
+}
+
+const buffer7a = construirXlsBuffer([
+  HEADER,
+  ['', '', 'CELULAR NUMERICO GRANDE', '', '823', '', '', '', 349844217008, '', '', 'Ativo'],
+]);
+const r7a = lerExportClientes(buffer7a, {});
+todosPassaram &= check('celular numerico -> string decimal completa (nao notacao cientifica)', r7a.linhas[0].celular === '349844217008');
+todosPassaram &= check('celular numerico: sem notacao cientifica', semNotacaoCientifica(r7a.linhas[0].celular));
+
+const buffer7b = construirXlsBuffer([
+  HEADER,
+  ['', '', 'TELEFONE NUMERICO MUITO GRANDE', '', '825', '', '', 34981228716153, '', '', '', 'Ativo'],
+]);
+const r7b = lerExportClientes(buffer7b, {});
+todosPassaram &= check('telefone numerico grande -> string decimal completa', r7b.linhas[0].telefone === '34981228716153');
+todosPassaram &= check('telefone numerico: sem notacao cientifica', semNotacaoCientifica(r7b.linhas[0].telefone));
+
+const buffer7c = construirXlsBuffer([
+  HEADER,
+  ['', '', 'TELEFONE E CELULAR COMO TEXTO', '', '902', '', '', '32210000', '98429308', '23/12/2020 19:20:20', '24/06/2024 18:52:20', 'Ativo'],
+]);
+const r7c = lerExportClientes(buffer7c, {});
+todosPassaram &= check('telefone como texto preservado ("32210000")', r7c.linhas[0].telefone === '32210000');
+todosPassaram &= check('celular como texto preservado ("98429308")', r7c.linhas[0].celular === '98429308');
+todosPassaram &= check('Incluído Em (data-texto) nao afetado pelo fix', r7c.linhas[0].incluidoEm === '23/12/2020 19:20:20');
+todosPassaram &= check('Alterado Em (data-texto) nao afetado pelo fix', r7c.linhas[0].alteradoEm === '24/06/2024 18:52:20');
+
+const buffer7d = construirXlsBuffer([
+  HEADER,
+  ['', '', 'TELEFONE E CELULAR VAZIOS', '', '903', '', '', '', '', '', '', 'Ativo'],
+]);
+const r7d = lerExportClientes(buffer7d, {});
+todosPassaram &= check('telefone vazio permanece string vazia', r7d.linhas[0].telefone === '');
+todosPassaram &= check('celular vazio permanece string vazia', r7d.linhas[0].celular === '');
+
 console.log(
   '\nResultado geral leitor-export-clientes.js:',
   todosPassaram ? 'TODOS OS TESTES PASSARAM' : 'HA TESTES QUE FALHARAM',

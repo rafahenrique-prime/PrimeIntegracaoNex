@@ -1,0 +1,15 @@
+{
+  "_comentario": "EXEMPLO DE SCHEMA - dados 100% sinteticos/ficticios, gerados so para ilustrar o formato esperado por SERVICO/broad-scope-guard-nex.js (carregarBaseline). NUNCA usar este arquivo como baseline real: nenhum destes IDs, hash ou nome de arquivo corresponde a um export real do NEX. A baseline real de producao (SERVICO/baseline-transacoes-conhecidas.json) e dado operacional privado, gerada uma unica vez a partir de um export amplo real homologado, e NUNCA e commitada no repositorio publico (ver .gitignore). Para restaurar uma instalacao nova: copiar o arquivo real de um backup privado para SERVICO/baseline-transacoes-conhecidas.json ANTES de liberar processamento de Vendas - sem ele, o BROAD_SCOPE_GATE bloqueia (fail-closed, BLOCK_BASELINE_INVALIDA) todo processamento de Vendas, por design.",
+  "version": 1,
+  "generatedAt": "2000-01-01T00:00:00.000Z",
+  "sourceFile": "vendas-auto-EXEMPLO-FICTICIO.xls",
+  "sourceSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "uniqueTransactionCount": 5,
+  "ids": [
+    "EXEMPLO-0001",
+    "EXEMPLO-0002",
+    "EXEMPLO-0003",
+    "EXEMPLO-0004",
+    "EXEMPLO-0005"
+  ]
+}

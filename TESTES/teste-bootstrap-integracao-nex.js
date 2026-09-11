@@ -27,6 +27,8 @@ const {
   BootstrapNaoAprovadoError,
   IndiceClientesIndisponivelError,
   ehBaseline,
+  avaliarGateDataOperacional,
+  DATA_OPERACIONAL_MINIMA,
 } = require('../SERVICO/bootstrap-integracao-nex');
 
 function check(desc, cond) {
@@ -38,6 +40,27 @@ function check(desc, cond) {
 function novoDiretorioTemp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'teste-bootstrap-'));
 }
+
+/**
+ * HARDENING 2E - BROAD_SCOPE_GATE bloqueia por padrao qualquer export de
+ * Vendas que nao seja um superset da baseline real de producao (4885 IDs)
+ * + sinais estaticos (rowCount>=500, minId<=10, oldest<=2021, 5 ancoras).
+ * Todo o resto desta suite usa fixtures sinteticas pequenas para testar
+ * OUTRA logica (anti-replay, indice de clientes, DATE_GATE, etc.) - nunca
+ * o proprio scope guard. Este override desliga por completo os 4 sinais
+ * estaticos (limiares triviais) e fornece uma baseline vazia (nenhum ID
+ * exigido), preservando o comportamento exato de antes do HARDENING 2E
+ * para esses testes. Os testes DEDICADOS ao scope guard (secao propria,
+ * mais abaixo) NUNCA usam este bypass - usam os valores reais ou fixtures
+ * controladas especificamente para exercitar o guard de verdade.
+ */
+const SCOPE_GUARD_BYPASS = Object.freeze({
+  rowCountFloor: 0,
+  minTransactionIdLimite: Infinity,
+  oldestOccurredAtLimite: '9999-12-31T23:59:59.999',
+  ancorasObrigatorias: [],
+  baselineIdsOverride: [],
+});
 
 const VENDAS_HEADER = [
   '', 'Ação', 'Número', 'Resumo', 'Tipo', 'Data', 'Hora', 'Origem', 'Itens', 'Cliente',
@@ -82,24 +105,24 @@ function bufferClientesFixture() {
 function bufferVendasHistoricasFixture() {
   return construirXlsBuffer([
     VENDAS_HEADER,
-    linhaDe(VENDAS_HEADER, { Número: '15751', Tipo: 'Venda', Data: '8/28/26', Hora: '14:17', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 97.00 ', 'Meio Pagto': 'Cartão de Crédito' }),
-    linhaDe(VENDAS_HEADER, { Número: '15756', Tipo: 'Venda', Data: '8/28/26', Hora: '16:37', Cliente: 'MATHEUS HENRIQUE DEPRE', Itens: '1 X BRAND 018 HUGO BOSS', Debitado: 'R$ 89.00 ' }),
-    linhaDe(VENDAS_HEADER, { Número: '15704', Tipo: 'Venda', Data: '8/17/26', Hora: '14:50', Cliente: 'JADER', Itens: '2 X LUPO SPORT 0002', Subtotal: 'R$ 318.00 ', 'Valor Pago': 'R$ 159.00 ', 'Meio Pagto': 'PIX', Debitado: 'R$ 159.00 ' }),
+    linhaDe(VENDAS_HEADER, { Número: '15751', Tipo: 'Venda', Data: '9/18/26', Hora: '14:17', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 97.00 ', 'Meio Pagto': 'Cartão de Crédito' }),
+    linhaDe(VENDAS_HEADER, { Número: '15756', Tipo: 'Venda', Data: '9/18/26', Hora: '16:37', Cliente: 'MATHEUS HENRIQUE DEPRE', Itens: '1 X BRAND 018 HUGO BOSS', Debitado: 'R$ 89.00 ' }),
+    linhaDe(VENDAS_HEADER, { Número: '15704', Tipo: 'Venda', Data: '9/7/26', Hora: '14:50', Cliente: 'JADER', Itens: '2 X LUPO SPORT 0002', Subtotal: 'R$ 318.00 ', 'Valor Pago': 'R$ 159.00 ', 'Meio Pagto': 'PIX', Debitado: 'R$ 159.00 ' }),
   ]);
 }
 
 function bufferVenda_F4FIX2(numero, cliente) {
   return construirXlsBuffer([
     VENDAS_HEADER,
-    linhaDe(VENDAS_HEADER, { Número: numero, Tipo: 'Venda', Data: '1/2/26', Hora: '10:00', Cliente: cliente, 'Valor Pago': 'R$ 10.00 ' }),
+    linhaDe(VENDAS_HEADER, { Número: numero, Tipo: 'Venda', Data: '9/8/26', Hora: '10:00', Cliente: cliente, 'Valor Pago': 'R$ 10.00 ' }),
   ]);
 }
 
 function bufferExtratoFixture() {
   return construirXlsBuffer([
     EXTRATO_HEADER,
-    linhaDe(EXTRATO_HEADER, { 'No.Tran': '15756', Tipo: 'Venda', Data: '8/28/26', Hora: '16:37', 'Total Final': 'R$ 89.00 ', Debitado: 'R$ 89.00 ' }),
-    linhaDe(EXTRATO_HEADER, { 'No.Tran': '15758', Tipo: 'Pagamento Débito', Data: '8/28/26', Hora: '17:08', 'Total Final': 'R$ 89.00 ', 'Valor Pago': 'R$ 89.00 ', 'Meio Pagto': 'Dinheiro' }),
+    linhaDe(EXTRATO_HEADER, { 'No.Tran': '15756', Tipo: 'Venda', Data: '9/18/26', Hora: '16:37', 'Total Final': 'R$ 89.00 ', Debitado: 'R$ 89.00 ' }),
+    linhaDe(EXTRATO_HEADER, { 'No.Tran': '15758', Tipo: 'Pagamento Débito', Data: '9/18/26', Hora: '17:08', 'Total Final': 'R$ 89.00 ', 'Valor Pago': 'R$ 89.00 ', 'Meio Pagto': 'Dinheiro' }),
   ]);
 }
 
@@ -137,13 +160,13 @@ async function main() {
     outbox = new OutboxLocal(dbPath);
     checkpoint = new CheckpointSqlite(dbPath);
     orq = new OrquestradorIntegracaoNex({ outbox, checkpoint });
-    boot = new BootstrapIntegracaoNex({ estado, orquestrador: orq, diretorioExports: dirPrincipal });
+    boot = new BootstrapIntegracaoNex({ estado, orquestrador: orq, diretorioExports: dirPrincipal, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
 
     escrever(dirPrincipal, 'Exportar-clientes.xls', bufferClientesFixture());
     escrever(dirPrincipal, 'Exportar-vendas.xls', bufferVendasHistoricasFixture());
     escrever(dirPrincipal, 'Exportar-extrato.xls', bufferExtratoFixture());
 
-    const cutoff = '2026-08-29T00:00:00';
+    const cutoff = '2026-09-19T00:00:00';
     const relDry = await boot.executarDryRun(cutoff);
     todosPassaram &= check('B. estado muda para DRY_RUN apos executarDryRun', (await estado.obterEstado()).status === ESTADOS_BOOTSTRAP.DRY_RUN);
     todosPassaram &= check('dry-run classifica arquivos/eventos (relatorio nao vazio)', relDry.totalArquivos === 3 && relDry.baseline >= 1);
@@ -196,7 +219,7 @@ async function main() {
 
   // ---------- Confirmar baseline real (arquivos+eventos do dry-run anterior) ----------
   console.log('\n=== Confirmar baseline real a partir do dry-run (idempotente - rodado 2x) ===');
-  const cutoffReal = '2026-08-29T00:00:00';
+  const cutoffReal = '2026-09-19T00:00:00';
   let relBase1, relBase2;
   {
     relBase1 = await boot.confirmarBaseline(cutoffReal);
@@ -240,10 +263,10 @@ async function main() {
     const outboxSC = new OutboxLocal(dbSemClientes);
     const checkpointSC = new CheckpointSqlite(dbSemClientes);
     const orqSC = new OrquestradorIntegracaoNex({ outbox: outboxSC, checkpoint: checkpointSC });
-    const bootSC = new BootstrapIntegracaoNex({ estado: estadoSC, orquestrador: orqSC, diretorioExports: dirSemClientes });
+    const bootSC = new BootstrapIntegracaoNex({ estado: estadoSC, orquestrador: orqSC, diretorioExports: dirSemClientes, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
 
     const caminhoVendasSC = escrever(dirSemClientes, 'Exportar-vendas.xls', bufferVendasHistoricasFixture());
-    const cutoffSC = '2026-08-29T00:00:00';
+    const cutoffSC = '2026-09-19T00:00:00';
     await bootSC.executarDryRun(cutoffSC);
     await bootSC.confirmarBaseline(cutoffSC);
     await bootSC.aprovar();
@@ -265,8 +288,8 @@ async function main() {
     // reprocessa arquivo NOVO (fora do baseline) para provar resolucao exact-only
     const bufferComEventoNovo = construirXlsBuffer([
       VENDAS_HEADER,
-      linhaDe(VENDAS_HEADER, { Número: '77001', Tipo: 'Venda', Data: '8/30/26', Hora: '09:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 10.00 ' }),
-      linhaDe(VENDAS_HEADER, { Número: '77002', Tipo: 'Venda', Data: '8/30/26', Hora: '09:05', Cliente: 'CLIENTE INEXISTENTE XPTO', 'Valor Pago': 'R$ 10.00 ' }),
+      linhaDe(VENDAS_HEADER, { Número: '77001', Tipo: 'Venda', Data: '9/20/26', Hora: '09:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 10.00 ' }),
+      linhaDe(VENDAS_HEADER, { Número: '77002', Tipo: 'Venda', Data: '9/20/26', Hora: '09:05', Cliente: 'CLIENTE INEXISTENTE XPTO', 'Valor Pago': 'R$ 10.00 ' }),
     ]);
     const caminhoNovoSC = escrever(dirSemClientes, 'Exportar-vendas-novo.xls', bufferComEventoNovo);
     const relIndice = await bootSC.processarArquivoOperacional(caminhoNovoSC);
@@ -286,10 +309,10 @@ async function main() {
     // SALE_CANCELLED pos-cutoff, e review_required pos-cutoff
     const bufferComTudo = construirXlsBuffer([
       VENDAS_HEADER,
-      linhaDe(VENDAS_HEADER, { Número: '15751', Tipo: 'Venda', Data: '8/28/26', Hora: '14:17', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 97.00 ', 'Meio Pagto': 'Cartão de Crédito' }), // baseline identico
-      linhaDe(VENDAS_HEADER, { Número: '88001', Tipo: 'Venda', Data: '8/30/26', Hora: '10:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 33.00 ' }), // NOVO
-      linhaDe(VENDAS_HEADER, { Número: '88002', Tipo: 'Venda', Data: '8/30/26', Hora: '11:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 20.00 ', Cancelado: 'Sim', 'Cancelado Em': '8/30/26 12:00' }), // SALE_CANCELLED novo
-      linhaDe(VENDAS_HEADER, { Número: '88003', Tipo: 'Venda', Data: '8/30/26', Hora: '13:00', Cliente: 'CANELINHA' }), // UNCLASSIFIED (sem valores)
+      linhaDe(VENDAS_HEADER, { Número: '15751', Tipo: 'Venda', Data: '9/18/26', Hora: '14:17', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 97.00 ', 'Meio Pagto': 'Cartão de Crédito' }), // baseline identico
+      linhaDe(VENDAS_HEADER, { Número: '88001', Tipo: 'Venda', Data: '9/20/26', Hora: '10:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 33.00 ' }), // NOVO
+      linhaDe(VENDAS_HEADER, { Número: '88002', Tipo: 'Venda', Data: '9/20/26', Hora: '11:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 20.00 ', Cancelado: 'Sim', 'Cancelado Em': '9/20/26 12:00' }), // SALE_CANCELLED novo
+      linhaDe(VENDAS_HEADER, { Número: '88003', Tipo: 'Venda', Data: '9/20/26', Hora: '13:00', Cliente: 'CANELINHA' }), // UNCLASSIFIED (sem valores)
     ]);
     const caminho = escrever(dirPrincipal, 'Exportar-vendas-pos-approved.xls', bufferComTudo);
     const rel = await boot.processarArquivoOperacional(caminho);
@@ -307,7 +330,7 @@ async function main() {
     // T. novo REVIEW_REQUIRED > cutoff preserva sourceStatus e ainda entra na outbox (politica F3.4)
     const bufferReview = construirXlsBuffer([
       VENDAS_HEADER,
-      linhaDe(VENDAS_HEADER, { Número: '88004', Tipo: 'Venda', Data: '8/30/26', Hora: '14:00', Cliente: 'CLIENTE SEM CADASTRO ALGUM', 'Valor Pago': 'R$ 15.00 ' }),
+      linhaDe(VENDAS_HEADER, { Número: '88004', Tipo: 'Venda', Data: '9/20/26', Hora: '14:00', Cliente: 'CLIENTE SEM CADASTRO ALGUM', 'Valor Pago': 'R$ 15.00 ' }),
     ]);
     const caminhoReview = escrever(dirPrincipal, 'Exportar-vendas-review.xls', bufferReview);
     const relReview = await boot.processarArquivoOperacional(caminhoReview);
@@ -324,10 +347,10 @@ async function main() {
     // altera o arquivo baseline original, adicionando uma linha nova pos-cutoff
     const bufferAlterado = construirXlsBuffer([
       VENDAS_HEADER,
-      linhaDe(VENDAS_HEADER, { Número: '15751', Tipo: 'Venda', Data: '8/28/26', Hora: '14:17', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 97.00 ', 'Meio Pagto': 'Cartão de Crédito' }),
-      linhaDe(VENDAS_HEADER, { Número: '15756', Tipo: 'Venda', Data: '8/28/26', Hora: '16:37', Cliente: 'MATHEUS HENRIQUE DEPRE', Itens: '1 X BRAND 018 HUGO BOSS', Debitado: 'R$ 89.00 ' }),
-      linhaDe(VENDAS_HEADER, { Número: '15704', Tipo: 'Venda', Data: '8/17/26', Hora: '14:50', Cliente: 'JADER', Itens: '2 X LUPO SPORT 0002', Subtotal: 'R$ 318.00 ', 'Valor Pago': 'R$ 159.00 ', 'Meio Pagto': 'PIX', Debitado: 'R$ 159.00 ' }),
-      linhaDe(VENDAS_HEADER, { Número: '99900', Tipo: 'Venda', Data: '8/31/26', Hora: '15:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 44.00 ' }), // NOVO, so aparece agora
+      linhaDe(VENDAS_HEADER, { Número: '15751', Tipo: 'Venda', Data: '9/18/26', Hora: '14:17', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 97.00 ', 'Meio Pagto': 'Cartão de Crédito' }),
+      linhaDe(VENDAS_HEADER, { Número: '15756', Tipo: 'Venda', Data: '9/18/26', Hora: '16:37', Cliente: 'MATHEUS HENRIQUE DEPRE', Itens: '1 X BRAND 018 HUGO BOSS', Debitado: 'R$ 89.00 ' }),
+      linhaDe(VENDAS_HEADER, { Número: '15704', Tipo: 'Venda', Data: '9/7/26', Hora: '14:50', Cliente: 'JADER', Itens: '2 X LUPO SPORT 0002', Subtotal: 'R$ 318.00 ', 'Valor Pago': 'R$ 159.00 ', 'Meio Pagto': 'PIX', Debitado: 'R$ 159.00 ' }),
+      linhaDe(VENDAS_HEADER, { Número: '99900', Tipo: 'Venda', Data: '9/21/26', Hora: '15:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 44.00 ' }), // NOVO, so aparece agora
     ]);
     fs.writeFileSync(caminhoAlteravel, bufferAlterado);
 
@@ -353,7 +376,7 @@ async function main() {
     const checkpointAudit = new CheckpointSqlite(dbAudit);
     const estadoAudit = new EstadoBootstrapSqlite(dbAudit);
     const orqAudit = new OrquestradorIntegracaoNex({ outbox: outboxAudit, checkpoint: checkpointAudit });
-    const bootAudit = new BootstrapIntegracaoNex({ estado: estadoAudit, orquestrador: orqAudit, diretorioExports: dirAudit });
+    const bootAudit = new BootstrapIntegracaoNex({ estado: estadoAudit, orquestrador: orqAudit, diretorioExports: dirAudit, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
 
     // item SENT sem checkpoint (simula crash entre outbox e checkpoint, F3.5)
     await outboxAudit.enqueue({ eventId: 'SALE_PAID:NEX:AUDIT1', contentHash: 'h1', payload: {} });
@@ -429,7 +452,7 @@ async function main() {
       contextoClienteExtrato: { nexCustomerCode: '292', customerName: 'MATHEUS HENRIQUE DEPRE' },
     });
     escrever(dirExtrato, 'Exportar-extrato.xls', bufferExtratoFixture());
-    const cutoffExtrato = '2026-08-29T00:00:00';
+    const cutoffExtrato = '2026-09-19T00:00:00';
     await bootExtrato.executarDryRun(cutoffExtrato);
     const relBaseExtrato = await bootExtrato.confirmarBaseline(cutoffExtrato);
     const b15758 = await estadoExtrato.buscarEventoBaseline('DEBT_PAYMENT:NEX:15758');
@@ -451,16 +474,23 @@ async function main() {
     const outboxHA = new OutboxLocal(dbHA);
     const checkpointHA = new CheckpointSqlite(dbHA);
     const orqHA = new OrquestradorIntegracaoNex({ outbox: outboxHA, checkpoint: checkpointHA });
-    const bootHA = new BootstrapIntegracaoNex({ estado: estadoHA, orquestrador: orqHA, diretorioExports: dirHA });
+    const bootHA = new BootstrapIntegracaoNex({ estado: estadoHA, orquestrador: orqHA, diretorioExports: dirHA, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
 
     escrever(dirHA, 'Exportar-clientes.xls', bufferClientesFixture());
-    // A. baseline: eventId X (#50001), valor original, occurredAt = cutoff - 1 dia
+    // A. baseline: eventId X (#50001), valor original, occurredAt = cutoff - 1 dia.
+    // Datas deliberadamente DENTRO da janela operacional (HARDENING 2C:
+    // DATA_OPERACIONAL_MINIMA=2026-09-07) - se caissem antes dela, o novo
+    // gate de data bloquearia (BLOCK_ANTIGO) antes mesmo de chegar ao
+    // anti-replay, o que descaracterizaria este teste (que precisa
+    // exercitar especificamente a logica de BASELINE_CHANGED, nao o gate
+    // de data - ver secao propria "HARDENING 2C" mais abaixo para os
+    // testes do gate de data em si).
     const bufferOriginal = construirXlsBuffer([
       VENDAS_HEADER,
-      linhaDe(VENDAS_HEADER, { Número: '50001', Tipo: 'Venda', Data: '8/29/26', Hora: '10:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 100.00 ' }),
+      linhaDe(VENDAS_HEADER, { Número: '50001', Tipo: 'Venda', Data: '9/8/26', Hora: '10:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 100.00 ' }),
     ]);
     const caminhoHA = escrever(dirHA, 'Exportar-vendas.xls', bufferOriginal);
-    const cutoffHA = '2026-08-30T00:00:00';
+    const cutoffHA = '2026-09-10T00:00:00';
 
     await bootHA.executarDryRun(cutoffHA);
     await bootHA.confirmarBaseline(cutoffHA);
@@ -473,8 +503,8 @@ async function main() {
     // B. depois de APPROVED, o MESMO eventId (#50001) tem seu VALOR alterado no export (hash B), mesmo occurredAt historico
     const bufferAlterado = construirXlsBuffer([
       VENDAS_HEADER,
-      linhaDe(VENDAS_HEADER, { Número: '50001', Tipo: 'Venda', Data: '8/29/26', Hora: '10:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 999.00 ' }), // valor mudou -> hash muda, occurredAt igual
-      linhaDe(VENDAS_HEADER, { Número: '50002', Tipo: 'Venda', Data: '8/30/26', Hora: '08:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 5.00 ' }), // D. evento realmente novo, occurredAt > cutoff
+      linhaDe(VENDAS_HEADER, { Número: '50001', Tipo: 'Venda', Data: '9/8/26', Hora: '10:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 999.00 ' }), // valor mudou -> hash muda, occurredAt igual
+      linhaDe(VENDAS_HEADER, { Número: '50002', Tipo: 'Venda', Data: '9/11/26', Hora: '08:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 5.00 ' }), // D. evento realmente novo, occurredAt > cutoff (e dentro da janela operacional)
     ]);
     fs.writeFileSync(caminhoHA, bufferAlterado);
 
@@ -602,7 +632,7 @@ async function main() {
     const outboxFix = new OutboxLocal(dbFix);
     const checkpointFix = new CheckpointSqlite(dbFix);
     const orqFix = new OrquestradorIntegracaoNex({ outbox: outboxFix, checkpoint: checkpointFix });
-    const bootFix = new BootstrapIntegracaoNex({ estado: estadoFix, orquestrador: orqFix, diretorioExports: dirFix, fsImpl: fsOrdemFixa });
+    const bootFix = new BootstrapIntegracaoNex({ estado: estadoFix, orquestrador: orqFix, diretorioExports: dirFix, fsImpl: fsOrdemFixa, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
 
     const cutoffFix = '2026-08-01T00:00:00';
     const relDryFix = await bootFix.executarDryRun(cutoffFix);
@@ -670,7 +700,7 @@ async function main() {
     const outboxParcial = new OutboxLocal(dbParcial);
     const checkpointParcial = new CheckpointSqlite(dbParcial);
     const orqParcial = new OrquestradorIntegracaoNex({ outbox: outboxParcial, checkpoint: checkpointParcial });
-    const bootParcial = new BootstrapIntegracaoNex({ estado: estadoParcial, orquestrador: orqParcial, diretorioExports: dirParcial });
+    const bootParcial = new BootstrapIntegracaoNex({ estado: estadoParcial, orquestrador: orqParcial, diretorioExports: dirParcial, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
 
     await bootParcial._varrerEClassificar('2026-08-01T00:00:00');
     const relVendasParcial = await orqParcial.processarArquivo(caminhoVendasParcial, { dryRun: true });
@@ -711,7 +741,7 @@ async function main() {
     const outboxOp = new OutboxLocal(dbOp);
     const checkpointOp = new CheckpointSqlite(dbOp);
     const orqOp = new OrquestradorIntegracaoNex({ outbox: outboxOp, checkpoint: checkpointOp });
-    const bootOp = new BootstrapIntegracaoNex({ estado: estadoOp, orquestrador: orqOp, diretorioExports: dirOp });
+    const bootOp = new BootstrapIntegracaoNex({ estado: estadoOp, orquestrador: orqOp, diretorioExports: dirOp, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
 
     const cutoffOp = '2026-01-01T00:00:00';
     await bootOp.executarDryRun(cutoffOp);
@@ -809,7 +839,7 @@ async function main() {
     const outboxInc = new OutboxLocal(dbInc);
     const checkpointInc = new CheckpointSqlite(dbInc);
     const orqInc = new OrquestradorIntegracaoNex({ outbox: outboxInc, checkpoint: checkpointInc });
-    const bootInc = new BootstrapIntegracaoNex({ estado: estadoInc, orquestrador: orqInc, diretorioExports: dirInc });
+    const bootInc = new BootstrapIntegracaoNex({ estado: estadoInc, orquestrador: orqInc, diretorioExports: dirInc, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
 
     const cutoffInc = '2026-01-01T00:00:00';
     await bootInc.executarDryRun(cutoffInc);
@@ -849,6 +879,108 @@ async function main() {
 
     estadoInc.fechar(); outboxInc.fechar(); checkpointInc.fechar();
     fs.rmSync(dirInc, { recursive: true, force: true });
+  }
+
+  // ---------- HARDENING 2C. Gate de data operacional (T1-T14) ----------
+  console.log('\n=== HARDENING 2C. Gate de data operacional (occurredAt >= DATA_OPERACIONAL_MINIMA) ===');
+  {
+    // ---- T1-T7B: funcao pura avaliarGateDataOperacional ----
+    todosPassaram &= check('T1. 2026-09-06T23:59:59 -> BLOCK_ANTIGO', avaliarGateDataOperacional('2026-09-06T23:59:59', DATA_OPERACIONAL_MINIMA) === 'BLOCK_ANTIGO');
+    todosPassaram &= check('T2. 2026-09-07T00:00:00 (sem milissegundos) -> PASS', avaliarGateDataOperacional('2026-09-07T00:00:00', DATA_OPERACIONAL_MINIMA) === 'PASS');
+    todosPassaram &= check('T2B. 2026-09-07T00:00:00.000 (com milissegundos) -> PASS', avaliarGateDataOperacional('2026-09-07T00:00:00.000', DATA_OPERACIONAL_MINIMA) === 'PASS');
+    todosPassaram &= check('T3. venda real #15786 (occurredAt=2026-09-07T15:24:00) -> PASS', avaliarGateDataOperacional('2026-09-07T15:24:00', DATA_OPERACIONAL_MINIMA) === 'PASS');
+    todosPassaram &= check('T4. 2026-09-08T00:00:01 -> PASS', avaliarGateDataOperacional('2026-09-08T00:00:01', DATA_OPERACIONAL_MINIMA) === 'PASS');
+    todosPassaram &= check('T5. occurredAt invalido (com "Z") -> BLOCK_DATA_INVALIDA', avaliarGateDataOperacional('2026-09-07T00:00:00Z', DATA_OPERACIONAL_MINIMA) === 'BLOCK_DATA_INVALIDA');
+    todosPassaram &= check('T5b. occurredAt invalido (com offset) -> BLOCK_DATA_INVALIDA', avaliarGateDataOperacional('2026-09-07T00:00:00-03:00', DATA_OPERACIONAL_MINIMA) === 'BLOCK_DATA_INVALIDA');
+    todosPassaram &= check('T5c. occurredAt texto arbitrario -> BLOCK_DATA_INVALIDA', avaliarGateDataOperacional('data-invalida', DATA_OPERACIONAL_MINIMA) === 'BLOCK_DATA_INVALIDA');
+    todosPassaram &= check('T6. occurredAt null -> BLOCK_DATA_INVALIDA', avaliarGateDataOperacional(null, DATA_OPERACIONAL_MINIMA) === 'BLOCK_DATA_INVALIDA');
+    todosPassaram &= check('T6b. occurredAt string vazia -> BLOCK_DATA_INVALIDA', avaliarGateDataOperacional('', DATA_OPERACIONAL_MINIMA) === 'BLOCK_DATA_INVALIDA');
+    todosPassaram &= check('T6c. occurredAt undefined -> BLOCK_DATA_INVALIDA', avaliarGateDataOperacional(undefined, DATA_OPERACIONAL_MINIMA) === 'BLOCK_DATA_INVALIDA');
+    todosPassaram &= check('T7A. 2026-09-06T23:59:59.999 (1ms antes da virada) -> BLOCK_ANTIGO', avaliarGateDataOperacional('2026-09-06T23:59:59.999', DATA_OPERACIONAL_MINIMA) === 'BLOCK_ANTIGO');
+    todosPassaram &= check('T7B. 2026-09-07T00:00:00.000 (virada exata) -> PASS', avaliarGateDataOperacional('2026-09-07T00:00:00.000', DATA_OPERACIONAL_MINIMA) === 'PASS');
+    todosPassaram &= check('DATA_OPERACIONAL_MINIMA e exatamente 2026-09-07T00:00:00.000', DATA_OPERACIONAL_MINIMA === '2026-09-07T00:00:00.000');
+
+    // ---- T8-T14: integracao real via processarArquivoOperacional ----
+    const dirDG = novoDiretorioTemp();
+    const dbDG = path.join(dirDG, 'db.db');
+    const estadoDG = new EstadoBootstrapSqlite(dbDG);
+    const outboxDG = new OutboxLocal(dbDG);
+    const checkpointDG = new CheckpointSqlite(dbDG);
+    const orqDG = new OrquestradorIntegracaoNex({ outbox: outboxDG, checkpoint: checkpointDG });
+    const bootDG = new BootstrapIntegracaoNex({ estado: estadoDG, orquestrador: orqDG, diretorioExports: dirDG, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
+
+    escrever(dirDG, 'Exportar-clientes.xls', bufferClientesFixture());
+    // cutoff de anti-replay POSTERIOR a DATA_OPERACIONAL_MINIMA, deliberadamente -
+    // isola o teste de anti-replay (T9) da redundancia estrutural que existe hoje
+    // em producao real (cutoff real 2026-08-30 < DATA_OPERACIONAL_MINIMA
+    // 2026-09-07, entao anti-replay so seria alcancavel de fato se um cutoff
+    // futuro ficasse depois da janela operacional - ver nota T9 abaixo).
+    const cutoffDG = '2026-09-10T00:00:00';
+    const bufferBaselineDG = construirXlsBuffer([
+      VENDAS_HEADER,
+      // #60001: dentro da janela operacional (>=07/09) E dentro do baseline deste cutoff (<=10/09) - permite provar T9 (anti-replay) sem violar o gate de data.
+      linhaDe(VENDAS_HEADER, { Número: '60001', Tipo: 'Venda', Data: '9/8/26', Hora: '09:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 12.00 ' }),
+    ]);
+    escrever(dirDG, 'Exportar-vendas-baseline.xls', bufferBaselineDG);
+    await bootDG.executarDryRun(cutoffDG);
+    await bootDG.confirmarBaseline(cutoffDG);
+    await bootDG.aprovar();
+
+    // Espiao read-only sobre avaliarEventoContraBaseline (metodo real de
+    // EstadoBootstrapSqlite) - nunca altera comportamento, so registra quais
+    // eventIds efetivamente chegaram a essa chamada. Usado para provar T12
+    // (short-circuit real: um evento bloqueado pelo gate de data NUNCA aciona
+    // esta chamada).
+    const chamadasAntiReplay = [];
+    const avaliarOriginal = estadoDG.avaliarEventoContraBaseline.bind(estadoDG);
+    estadoDG.avaliarEventoContraBaseline = async (eventId, contentHash) => {
+      chamadasAntiReplay.push(eventId);
+      return avaliarOriginal(eventId, contentHash);
+    };
+
+    const bufferMisto = construirXlsBuffer([
+      VENDAS_HEADER,
+      linhaDe(VENDAS_HEADER, { Número: '60001', Tipo: 'Venda', Data: '9/8/26', Hora: '09:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 12.00 ' }), // identico ao baseline -> anti-replay deve bloquear (T9)
+      linhaDe(VENDAS_HEADER, { Número: '60002', Tipo: 'Venda', Data: '9/6/26', Hora: '23:59', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 20.00 ' }), // antes da janela operacional -> BLOCK_ANTIGO (T10/T12)
+      linhaDe(VENDAS_HEADER, { Número: '60003', Tipo: 'Venda', Data: '', Hora: '', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 30.00 ' }), // Data ausente -> occurredAt=null -> BLOCK_DATA_INVALIDA (T11/T12)
+      linhaDe(VENDAS_HEADER, { Número: '60004', Tipo: 'Venda', Data: '9/9/26', Hora: '10:00', Cliente: 'CANELINHA', 'Valor Pago': 'R$ 40.00 ' }), // novo, dentro da janela, pos-cutoff-do-teste -> PASSA tudo (T14, fluxo atual sem regressao)
+    ]);
+    const caminhoMisto = escrever(dirDG, 'Exportar-vendas-misto.xls', bufferMisto);
+    const relMisto = await bootDG.processarArquivoOperacional(caminhoMisto);
+
+    // T9: anti-replay continua funcionando para evento que PASSA no gate de data
+    todosPassaram &= check('T9. #60001 (identico ao baseline, dentro da janela operacional) -> ignoradosAntiReplay, nao enfileirado', relMisto.ignoradosAntiReplay.includes('SALE_PAID:NEX:60001') && !relMisto.enfileirados.includes('SALE_PAID:NEX:60001'));
+    todosPassaram &= check('T9. anti-replay foi de fato CHAMADO para #60001 (nao bloqueado antes disso)', chamadasAntiReplay.includes('SALE_PAID:NEX:60001'));
+
+    // T10: evento antigo bloqueado pelo gate de data -> zero outbox.enqueue
+    todosPassaram &= check('T10. #60002 (antes da janela operacional) -> BLOCK_ANTIGO em bloqueadosPorDataOperacional', relMisto.bloqueadosPorDataOperacional.includes('SALE_PAID:NEX:60002'));
+    todosPassaram &= check('T10. #60002 nunca aparece em enfileirados', !relMisto.enfileirados.includes('SALE_PAID:NEX:60002'));
+    todosPassaram &= check('T10. ZERO outbox para #60002', (await outboxDG.buscarPorEventId('SALE_PAID:NEX:60002')) === null);
+
+    // T11: occurredAt invalido/ausente -> BLOCK_DATA_INVALIDA, zero outbox.enqueue
+    todosPassaram &= check('T11. #60003 (Data ausente no XLS) -> BLOCK_DATA_INVALIDA em bloqueadosPorDataInvalida', relMisto.bloqueadosPorDataInvalida.includes('SALE_PAID:NEX:60003'));
+    todosPassaram &= check('T11. #60003 nunca aparece em enfileirados', !relMisto.enfileirados.includes('SALE_PAID:NEX:60003'));
+    todosPassaram &= check('T11. ZERO outbox para #60003', (await outboxDG.buscarPorEventId('SALE_PAID:NEX:60003')) === null);
+
+    // T12: short-circuit real - #60002/#60003 (bloqueados pelo gate de data) NUNCA chamam avaliarEventoContraBaseline
+    todosPassaram &= check('T12. #60002 (BLOCK_ANTIGO) NUNCA aciona anti-replay (short-circuit provado)', !chamadasAntiReplay.includes('SALE_PAID:NEX:60002'));
+    todosPassaram &= check('T12. #60003 (BLOCK_DATA_INVALIDA) NUNCA aciona anti-replay (short-circuit provado)', !chamadasAntiReplay.includes('SALE_PAID:NEX:60003'));
+
+    // T13: categorias distintas - nenhuma mistura entre BLOCK_ANTIGO/BLOCK_DATA_INVALIDA/ignoradosAntiReplay
+    todosPassaram &= check('T13. #60002 NAO aparece em ignoradosAntiReplay (categoria propria, nunca misturada)', !relMisto.ignoradosAntiReplay.includes('SALE_PAID:NEX:60002'));
+    todosPassaram &= check('T13. #60003 NAO aparece em ignoradosAntiReplay (categoria propria, nunca misturada)', !relMisto.ignoradosAntiReplay.includes('SALE_PAID:NEX:60003'));
+    todosPassaram &= check('T13. #60001 NAO aparece em bloqueadosPorDataOperacional/bloqueadosPorDataInvalida', !relMisto.bloqueadosPorDataOperacional.includes('SALE_PAID:NEX:60001') && !relMisto.bloqueadosPorDataInvalida.includes('SALE_PAID:NEX:60001'));
+
+    // T14: fluxo atual (evento novo, dentro da janela) permanece sem regressao
+    todosPassaram &= check('T14. #60004 (novo, dentro da janela operacional) -> enfileirado normalmente, sem regressao', relMisto.enfileirados.includes('SALE_PAID:NEX:60004'));
+    todosPassaram &= check('T14. #60004 chegou a acionar anti-replay normalmente (fluxo completo preservado)', chamadasAntiReplay.includes('SALE_PAID:NEX:60004'));
+
+    // T8: checkpoint continua funcionando normalmente (sanity - camada seguinte
+    // do pipeline nunca foi tocada por este gate).
+    todosPassaram &= check('T8. checkpoint.eventoJaConfirmado() funciona normalmente para evento nao confirmado (false)', (await checkpointDG.eventoJaConfirmado('SALE_PAID:NEX:60004', 'qualquer-hash')) === false);
+
+    estadoDG.fechar(); outboxDG.fechar(); checkpointDG.fechar();
+    fs.rmSync(dirDG, { recursive: true, force: true });
   }
 
   // ---------- AP/AQ/AR/AS. Garantias estruturais ----------

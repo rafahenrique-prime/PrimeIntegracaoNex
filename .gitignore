@@ -5,6 +5,23 @@ node_modules/
 # clientes-nex.xls (exportacao real do NEX) esta coberto por estas regras.
 *.xls
 *.xlsx
+# F6.14B2.10A1 - excecao ESCOPADA e minima: fixture SINTETICA (sem PII,
+# dados inventados - "CLIENTE SINTETICO TESTE", numeros de venda 1-5)
+# usada exclusivamente pelo teste de integracao real
+# NodeExportValidatorIntegrationTests. NUNCA generalizar para *.xls/*.xlsx
+# nem para nenhum outro caminho - EXPORT_STAGE/EXPORTADOS/OUTPUT e
+# qualquer outro .xls continuam ignorados pelas regras acima.
+!WINDOWS/PrimeNexExportAgent.Tests/Fixtures/vendas-fixture-sintetica.xls
+
+# HARDENING 2E - baseline real de transacoes conhecidas (BROAD_SCOPE_GATE,
+# ver SERVICO/broad-scope-guard-nex.js) e dado operacional PRIVADO
+# (~4885 nexTransactionId reais de venda) - o repositorio e PUBLICO, isto
+# NUNCA pode ser publicado. Fica somente local, restaurado de backup
+# privado em cada instalacao. Ausencia/invalidez do arquivo DEVE continuar
+# fail-closed (BLOCK_BASELINE_INVALIDA) - nunca inventar/relaxar um
+# fallback aqui. Ver SERVICO/baseline-transacoes-conhecidas.example.json
+# para o schema esperado (dados 100% sinteticos).
+SERVICO/baseline-transacoes-conhecidas.json
 EXPORTADOS/
 LOGS/
 OUTPUT/

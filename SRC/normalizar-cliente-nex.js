@@ -27,6 +27,59 @@ function stringOuNull(v) {
   return isVazio(v) ? null : String(v).trim();
 }
 
+// Valores literais que o export do NEX por vezes grava como texto no lugar
+// de deixar a celula vazia (ex.: coluna Email/Observações contendo a string
+// "null"). Comparação sempre case-insensitive.
+const PLACEHOLDERS_LITERAIS = new Set(['null', 'undefined', 'nan']);
+
+/**
+ * Igual a `isVazio`, mas também reconhece placeholders literais do NEX
+ * ("null"/"undefined"/"NaN", case-insensitive) e, quando `tratarHifenComoAusente`
+ * for true, um valor cujo conteúdo INTEIRO (após trim) seja exatamente "-"
+ * (marcador de "não informado" usado pelo NEX em campos estruturados).
+ *
+ * NUNCA remove um hífen que faça parte de um valor maior - ex.: "Rua A-10"
+ * continua válido em qualquer modo, porque a comparação é sempre com a
+ * string inteira, nunca com uma sub-string.
+ */
+function ehPlaceholder(v, { tratarHifenComoAusente = false } = {}) {
+  if (isVazio(v)) return true;
+  const s = String(v).trim();
+  if (PLACEHOLDERS_LITERAIS.has(s.toLowerCase())) return true;
+  if (tratarHifenComoAusente && s === '-') return true;
+  return false;
+}
+
+/**
+ * Igual a `stringOuNull`, mas usando `ehPlaceholder` no lugar de `isVazio` -
+ * ou seja, também colapsa placeholders literais do NEX para `null`.
+ */
+function campoOuNull(v, opcoes) {
+  return ehPlaceholder(v, opcoes) ? null : String(v).trim();
+}
+
+// Cabeçalhos brutos (ver SERVICO/leitor-export-clientes.js) que compõem o
+// endereço e não têm campo mapeado próprio em MAPA_CAMPOS - só existem em
+// `linhaBruta`. Nesta ordem porque é a ordem natural de leitura de um
+// endereço (logradouro, número, complemento, bairro, cidade, estado, CEP).
+const CABECALHOS_ENDERECO = ['Endereço', 'Número', 'Complemento', 'Bairro', 'Cidade', 'Estado', 'CEP'];
+
+/**
+ * Monta o endereço a partir dos componentes brutos disponíveis em
+ * `linhaBruta` (ver mapearLinhaPorCabecalho), normalizando CADA componente
+ * individualmente antes de concatenar - assim um único componente
+ * placeholder (ex.: CEP = "-") é descartado sem afetar os demais
+ * componentes reais do mesmo endereço. Retorna `null` quando nenhum
+ * componente sobra (endereço totalmente ausente/placeholder).
+ */
+function montarEndereco(linhaBruta) {
+  const bruto = linhaBruta || {};
+  const partes = CABECALHOS_ENDERECO
+    .map((cabecalho) => campoOuNull(bruto[cabecalho], { tratarHifenComoAusente: true }))
+    .filter(Boolean);
+  return partes.length ? partes.join(', ') : null;
+}
+
 /**
  * @param {Object} linhaBruta - uma linha de `lerExportClientes(...).linhas`
  * @returns {Object} cliente normalizado
@@ -34,16 +87,28 @@ function stringOuNull(v) {
 function normalizarClienteNex(linhaBruta) {
   const l = linhaBruta || {};
   const nomeOriginal = stringOuNull(l.nome) || '';
+  const status = stringOuNull(l.status);
 
   return {
     nexCustomerCode: stringOuNull(l.codigo),
     nome: nomeOriginal,
     nomeNormalizado: normalizarNomeClienteNex(nomeOriginal),
     debitoCredito: stringOuNull(l.debitoCredito),
-    celular: stringOuNull(l.celular),
-    telefone: stringOuNull(l.telefone),
-    cpfCnpj: stringOuNull(l.cpfCnpj),
-    status: stringOuNull(l.status),
+    celular: campoOuNull(l.celular, { tratarHifenComoAusente: true }),
+    telefone: campoOuNull(l.telefone, { tratarHifenComoAusente: true }),
+    cpfCnpj: campoOuNull(l.cpfCnpj, { tratarHifenComoAusente: true }),
+    email: campoOuNull(l.email, { tratarHifenComoAusente: true }),
+    endereco: montarEndereco(l.linhaBruta),
+    // "-" isolado em observações NÃO é tratado como placeholder (sem
+    // evidência de que seja sempre um marcador de ausência ali, diferente
+    // dos campos estruturados acima) - só "null"/"undefined"/"NaN"/vazio.
+    observacoes: campoOuNull(l.observacoes, { tratarHifenComoAusente: false }),
+    status,
+    // Mapeamento homologado (F6.16C/F6.16D) do valor bruto do NEX para o
+    // enum usado pelo Cliente do Base44. Campo adicional e não substitui
+    // `status` (que preserva o valor bruto do NEX) para não quebrar
+    // consumidores existentes que esperam o texto original ("Ativo").
+    statusBase44: status === 'Ativo' ? 'ativo' : status === 'Inativo' ? 'inativo' : null,
     incluidoEm: stringOuNull(l.incluidoEm),
     alteradoEm: stringOuNull(l.alteradoEm),
     source: 'export_clientes',
@@ -71,4 +136,4 @@ function validarClienteNex(clienteNormalizado) {
   return { status: erros.length ? 'invalido' : 'valido', erros, avisos };
 }
 
-module.exports = { normalizarClienteNex, validarClienteNex };
+module.exports = { normalizarClienteNex, validarClienteNex, ehPlaceholder, montarEndereco };

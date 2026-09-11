@@ -158,6 +158,14 @@ async function iniciarRunner(config) {
     contextoClienteExtrato: cfg.contextoClienteExtrato,
     fsImpl,
     logger,
+    // HARDENING 2E - nunca definidos pela producao real (cfg real nunca
+    // inclui esses campos); existem exclusivamente para permitir que
+    // testes offline (TESTES/teste-runner-integracao-nex.js) desliguem o
+    // BROAD_SCOPE_GATE ao exercitar fixtures sinteticas pequenas sobre
+    // OUTRA logica (anti-replay, checkpoint, outbox), sem tocar a
+    // baseline real de producao.
+    caminhoBaselineEscopo: cfg.caminhoBaselineEscopo,
+    scopeGuardOverrides: cfg.scopeGuardOverrides,
   });
 
   try {

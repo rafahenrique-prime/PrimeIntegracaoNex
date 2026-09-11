@@ -34,6 +34,18 @@ function novoDiretorioTemp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'teste-runner-'));
 }
 
+/** HARDENING 2E - ver mesma constante/justificativa em
+ * TESTES/teste-bootstrap-integracao-nex.js: desliga o BROAD_SCOPE_GATE
+ * para as fixtures sinteticas pequenas desta suite (nunca usado por
+ * cfg real de producao, que nunca define scopeGuardOverrides). */
+const SCOPE_GUARD_BYPASS = Object.freeze({
+  rowCountFloor: 0,
+  minTransactionIdLimite: Infinity,
+  oldestOccurredAtLimite: '9999-12-31T23:59:59.999',
+  ancorasObrigatorias: [],
+  baselineIdsOverride: [],
+});
+
 const VENDAS_HEADER = [
   '', 'Ação', 'Número', 'Resumo', 'Tipo', 'Data', 'Hora', 'Origem', 'Itens', 'Cliente',
   'Observações', 'Vendedor', 'Desconto', 'Subtotal', 'Entrega', 'Valor Pago', 'Meio Pagto',
@@ -144,12 +156,13 @@ async function main() {
   // ---------- A. Startup com APPROVED -> PASS ----------
   console.log('\n=== A. Startup com bootstrap APPROVED -> runner inicia sem erro ===');
   {
-    const { dbPath, dirRunner } = await prepararPilotoAprovado({ cutoff: '2026-01-01T00:00:00' });
+    const { dbPath, dirRunner } = await prepararPilotoAprovado({ cutoff: '2026-09-08T00:00:00' });
     const logger = criarLoggerFake();
     const transportar = criarTransportarFake();
     const runner = await iniciarRunner({
       dbPath, diretorioExports: dirRunner, transportar, logger,
       sleepImpl: sleepInstantaneo, intervaloEstabilidadeMs: 1, processadorIntervaloMs: 3600000,
+      scopeGuardOverrides: SCOPE_GUARD_BYPASS,
     });
     todosPassaram &= check('A. runner iniciou sem lancar excecao', runner && typeof runner.parar === 'function');
     todosPassaram &= check('A. RUNNER_INICIADO foi logado', logger.chamadas.some((c) => c.evento === 'RUNNER_INICIADO'));
@@ -176,13 +189,14 @@ async function main() {
   // ---------- C. Historico baselinado -> ZERO transporte ----------
   console.log('\n=== C. Evento historico (baselinado) presente no diretorio observado -> ZERO chamadas ao transporte fake ===');
   {
-    const cutoff = '2026-01-01T00:00:00';
-    const bufferHistorico = bufferVenda({ numero: '10001', data: '12/20/25', hora: '10:00' }); // occurredAt < cutoff
+    const cutoff = '2026-09-08T00:00:00';
+    const bufferHistorico = bufferVenda({ numero: '10001', data: '9/7/26', hora: '10:00' }); // occurredAt < cutoff
     const { dbPath, dirRunner } = await prepararPilotoAprovado({ cutoff, eventosHistoricosBuffer: bufferHistorico });
     const transportar = criarTransportarFake();
     const runner = await iniciarRunner({
       dbPath, diretorioExports: dirRunner, transportar, logger: criarLoggerFake(),
       sleepImpl: sleepInstantaneo, intervaloEstabilidadeMs: 1, processadorIntervaloMs: 3600000,
+      scopeGuardOverrides: SCOPE_GUARD_BYPASS,
     });
 
     // Mesmo conteudo EXATO usado para baselinar (garante mesmo contentHash),
@@ -204,16 +218,17 @@ async function main() {
   console.log('\n=== D. Evento novo pos-cutoff -> enqueue -> transporte fake CREATED -> SENT + checkpoint confirmado ===');
   let ambienteD;
   {
-    const cutoff = '2026-01-01T00:00:00';
+    const cutoff = '2026-09-08T00:00:00';
     const { dbPath, dirRunner } = await prepararPilotoAprovado({ cutoff });
     const transportar = criarTransportarFake({ result: 'CREATED', httpStatus: 200, correlationId: 'corr-90010', erro: null });
     const logger = criarLoggerFake();
     const runner = await iniciarRunner({
       dbPath, diretorioExports: dirRunner, transportar, logger,
       sleepImpl: sleepInstantaneo, intervaloEstabilidadeMs: 1, processadorIntervaloMs: 3600000,
+      scopeGuardOverrides: SCOPE_GUARD_BYPASS,
     });
 
-    const bufferNovo = bufferVenda({ numero: '90010', data: '1/2/26', hora: '10:00' }); // occurredAt > cutoff
+    const bufferNovo = bufferVenda({ numero: '90010', data: '9/9/26', hora: '10:00' }); // occurredAt > cutoff
     const caminhoNovo = escrever(dirRunner, 'vendas-novo.xls', bufferNovo);
     await runner._internoParaTeste.detector.varrerAgora();
 
@@ -246,7 +261,7 @@ async function main() {
   console.log('\n=== F. Transporte retorna ERROR/500 -> item termina RETRY com next_attempt_at futuro ===');
   let ambienteFG;
   {
-    const cutoff = '2026-01-01T00:00:00';
+    const cutoff = '2026-09-08T00:00:00';
     const { dbPath, dirRunner } = await prepararPilotoAprovado({ cutoff });
     const relogio = { agora: new Date('2026-01-02T10:00:00.000Z') };
     const transportar = criarTransportarFake({ result: 'ERROR', httpStatus: 500, correlationId: null, erro: 'fake 500' });
@@ -259,9 +274,10 @@ async function main() {
       intervaloEstabilidadeMs: 1,
       processadorIntervaloMs: 3600000,
       nowImpl: () => relogio.agora,
+      scopeGuardOverrides: SCOPE_GUARD_BYPASS,
     });
 
-    const bufferNovo = bufferVenda({ numero: '90020', data: '1/2/26', hora: '11:00' });
+    const bufferNovo = bufferVenda({ numero: '90020', data: '9/9/26', hora: '11:00' });
     escrever(dirRunner, 'vendas-novo-retry.xls', bufferNovo);
     await runner._internoParaTeste.detector.varrerAgora();
 
@@ -293,7 +309,7 @@ async function main() {
   // ---------- H. Restart com SENDING orfao -> recovery ----------
   console.log('\n=== H. Item deixado em SENDING (simulando queda) -> recuperado como RETRY no startup -> processado sem duplicar ===');
   {
-    const cutoff = '2026-01-01T00:00:00';
+    const cutoff = '2026-09-08T00:00:00';
     const { dbPath, dirRunner } = await prepararPilotoAprovado({ cutoff });
 
     // Enfileira um evento real via o caminho operacional oficial (conexao temporaria, fechada em seguida).
@@ -301,8 +317,8 @@ async function main() {
     const outboxTmp = new OutboxLocal(dbPath);
     const checkpointTmp = new CheckpointSqlite(dbPath);
     const orqTmp = new OrquestradorIntegracaoNex({ outbox: outboxTmp, checkpoint: checkpointTmp });
-    const bootTmp = new BootstrapIntegracaoNex({ estado: estadoTmp, orquestrador: orqTmp, diretorioExports: dirRunner });
-    const caminhoOrfao = escrever(dirRunner, 'vendas-orfao.xls', bufferVenda({ numero: '90030', data: '1/2/26', hora: '12:00' }));
+    const bootTmp = new BootstrapIntegracaoNex({ estado: estadoTmp, orquestrador: orqTmp, diretorioExports: dirRunner, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
+    const caminhoOrfao = escrever(dirRunner, 'vendas-orfao.xls', bufferVenda({ numero: '90030', data: '9/9/26', hora: '12:00' }));
     await bootTmp.processarArquivoOperacional(caminhoOrfao);
     const eventId = 'SALE_PAID:NEX:90030';
     // Simula uma queda EXATAMENTE apos o claim (SENDING), antes de qualquer resposta do transporte.
@@ -313,6 +329,7 @@ async function main() {
     const runner = await iniciarRunner({
       dbPath, diretorioExports: dirRunner, transportar, logger: criarLoggerFake(),
       sleepImpl: sleepInstantaneo, intervaloEstabilidadeMs: 1, processadorIntervaloMs: 3600000,
+      scopeGuardOverrides: SCOPE_GUARD_BYPASS,
     });
 
     // O proprio startup do runner (recuperarPendencias + drenagem inicial da
@@ -331,7 +348,7 @@ async function main() {
   {
     const dirBaseline = novoDiretorioTemp();
     // NENHUM arquivo de clientes.xls e escrito aqui - so o de vendas.
-    const cutoff = '2026-01-01T00:00:00';
+    const cutoff = '2026-09-08T00:00:00';
     const dbPath = path.join(dirBaseline, 'piloto.db');
     const estado = new EstadoBootstrapSqlite(dbPath);
     const outbox = new OutboxLocal(dbPath);
@@ -384,7 +401,7 @@ async function main() {
   // ---------- K. CHECKPOINT_AUSENTE -> WARN, continua, nenhuma auto-correcao ----------
   console.log('\n=== K. outbox SENT sem checkpoint correspondente -> auditarConsistencia loga WARN, runner inicia normalmente, nada e corrigido ===');
   {
-    const cutoff = '2026-01-01T00:00:00';
+    const cutoff = '2026-09-08T00:00:00';
     const { dbPath, dirRunner } = await prepararPilotoAprovado({ cutoff });
 
     // Simula a divergencia diretamente: leva um item ate SENT via
@@ -394,8 +411,8 @@ async function main() {
     const outboxTmp = new OutboxLocal(dbPath);
     const checkpointTmp = new CheckpointSqlite(dbPath);
     const orqTmp = new OrquestradorIntegracaoNex({ outbox: outboxTmp, checkpoint: checkpointTmp });
-    const bootTmp = new BootstrapIntegracaoNex({ estado: estadoTmp, orquestrador: orqTmp, diretorioExports: dirRunner });
-    const caminhoDesync = escrever(dirRunner, 'vendas-desync.xls', bufferVenda({ numero: '90040', data: '1/2/26', hora: '13:00' }));
+    const bootTmp = new BootstrapIntegracaoNex({ estado: estadoTmp, orquestrador: orqTmp, diretorioExports: dirRunner, scopeGuardOverrides: SCOPE_GUARD_BYPASS });
+    const caminhoDesync = escrever(dirRunner, 'vendas-desync.xls', bufferVenda({ numero: '90040', data: '9/9/26', hora: '13:00' }));
     await bootTmp.processarArquivoOperacional(caminhoDesync);
     const eventId = 'SALE_PAID:NEX:90040';
     await outboxTmp.transicionar(eventId, ESTADOS.SENDING, { incrementarTentativa: true });
@@ -406,6 +423,7 @@ async function main() {
     const runner = await iniciarRunner({
       dbPath, diretorioExports: dirRunner, transportar: criarTransportarFake(), logger,
       sleepImpl: sleepInstantaneo, intervaloEstabilidadeMs: 1, processadorIntervaloMs: 3600000,
+      scopeGuardOverrides: SCOPE_GUARD_BYPASS,
     });
 
     todosPassaram &= check('K. runner iniciou normalmente apesar da divergencia', runner != null);
@@ -425,12 +443,13 @@ async function main() {
   // ---------- L. parar() idempotente ----------
   console.log('\n=== L. parar(): detector parado, timer limpo, SQLite fechado, chamada dupla segura ===');
   {
-    const cutoff = '2026-01-01T00:00:00';
+    const cutoff = '2026-09-08T00:00:00';
     const { dbPath, dirRunner } = await prepararPilotoAprovado({ cutoff });
     const logger = criarLoggerFake();
     const runner = await iniciarRunner({
       dbPath, diretorioExports: dirRunner, transportar: criarTransportarFake(), logger,
       sleepImpl: sleepInstantaneo, intervaloEstabilidadeMs: 1, processadorIntervaloMs: 3600000,
+      scopeGuardOverrides: SCOPE_GUARD_BYPASS,
     });
 
     await runner.parar('PRIMEIRA_CHAMADA');

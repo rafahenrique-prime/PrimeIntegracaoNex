@@ -22,6 +22,45 @@ const path = require('path');
 const SRC_DIR = path.join(__dirname, '..', 'SRC');
 const { ehLinhaVazia, mapearLinhaPorCabecalho } = require(path.join(SRC_DIR, 'utilitarios-export-nex'));
 
+// Colunas onde o NEX as vezes grava telefone/celular como NUMERO puro na
+// celula (em vez de texto). Lidas com `raw:false`, o SheetJS formata numero
+// grande sem casas decimais/formato definido em notacao cientifica (ex.:
+// 349844217008 vira "3.49844E+11"), corrompendo o telefone. Para essas
+// colunas especificamente, usamos o valor NUMERICO bruto da celula (lido a
+// parte, com `raw:true`) para reconstruir a string decimal completa - sem
+// notacao cientifica e sem inventar/perder digitos. Quando a celula ja e
+// texto (celular como string), o valor bruto tambem e string e este ajuste
+// nao se aplica.
+const COLUNAS_NUMERO_SEM_NOTACAO_CIENTIFICA = ['Telefone', 'Celular'];
+
+function numeroCelulaParaStringDecimal(valorNumerico) {
+  if (!Number.isFinite(valorNumerico)) return String(valorNumerico);
+  // toFixed(0) evita notacao cientifica para qualquer inteiro dentro do
+  // intervalo seguro do IEEE-754 (ate 2^53), o que cobre confortavelmente
+  // qualquer numero de telefone/celular real.
+  return Number.isInteger(valorNumerico) ? valorNumerico.toFixed(0) : String(valorNumerico);
+}
+
+/**
+ * Corrige, em uma linha ja formatada (`raw:false`), as colunas de
+ * telefone/celular que na planilha ORIGINAL eram numero puro - substituindo
+ * o texto em notacao cientifica pela string decimal completa. Nao altera
+ * nenhuma outra coluna. Quando a celula original ja era texto, a linha
+ * bruta (`raw:true`) tambem retorna string e nada e trocado.
+ */
+function corrigirTelefonesNumericos(linhaFormatada, linhaBrutaNumerica, headers) {
+  const linha = linhaFormatada.slice();
+  for (const nomeColuna of COLUNAS_NUMERO_SEM_NOTACAO_CIENTIFICA) {
+    const idx = headers.indexOf(nomeColuna);
+    if (idx === -1) continue;
+    const valorBruto = linhaBrutaNumerica[idx];
+    if (typeof valorBruto === 'number') {
+      linha[idx] = numeroCelulaParaStringDecimal(valorBruto);
+    }
+  }
+  return linha;
+}
+
 class ErroLeituraExportClientes extends Error {
   constructor(codigo, mensagem) {
     super(mensagem);
@@ -92,9 +131,16 @@ function lerExportClientes(buffer, opcoes) {
     );
   }
 
+  // Segunda leitura, so para recuperar o valor NUMERICO bruto de celulas de
+  // telefone/celular que o SheetJS formatou em notacao cientifica na
+  // leitura principal (raw:false). Nao substitui a leitura principal -
+  // serve apenas de fonte para `corrigirTelefonesNumericos`.
+  const linhasBrutasNumericas = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+
   const linhas = linhasBrutas
     .slice(1)
     .filter((linha) => !ehLinhaVazia(linha))
+    .map((linha, i) => corrigirTelefonesNumericos(linha, linhasBrutasNumericas[i + 1] || [], headers))
     .map((linha) => mapearLinhaPorCabecalho(headers, linha, MAPA_CAMPOS));
 
   return { linhas };

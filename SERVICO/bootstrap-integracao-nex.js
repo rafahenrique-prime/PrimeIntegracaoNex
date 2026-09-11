@@ -32,6 +32,9 @@ const { RESULTADOS_CONFIRMADOS } = require(path.join(__dirname, 'checkpoint-sqli
 const { ESTADOS: ESTADOS_OUTBOX } = require(path.join(__dirname, 'outbox-local'));
 const { identificarTipoExport, TIPOS_EXPORT } = require(path.join(__dirname, 'orquestrador-integracao-nex'));
 const { lerExportClientes } = require(path.join(__dirname, 'leitor-export-clientes'));
+const { lerExportVendas } = require(path.join(__dirname, 'leitor-export-vendas'));
+const { normalizarVendaNex } = require(path.join(__dirname, '..', 'SRC', 'normalizar-venda-nex'));
+const { carregarBaseline, avaliarEscopoAmplo } = require(path.join(__dirname, 'broad-scope-guard-nex'));
 
 class BootstrapNaoAprovadoError extends Error {
   constructor(statusAtual) {
@@ -121,6 +124,48 @@ function ehBaseline(occurredAt, cutoff) {
   return a <= b;
 }
 
+/**
+ * GATE DE DATA OPERACIONAL (Fase HARDENING 2C) - primeira verificacao do
+ * pipeline de elegibilidade, ANTES do anti-replay. Responde SOMENTE
+ * "esta transacao esta dentro da janela operacional atual?", usando o
+ * MESMO contrato de timezone/formato de `ehBaseline` acima (string local
+ * naive, comparacao lexicografica via `normalizarParaChaveComparavel` -
+ * nunca Date.parse/epoch/UTC).
+ *
+ * Fail-closed: `occurredAt` ausente, vazio, ou fora do formato aceito
+ * (inclusive qualquer valor com "Z"/offset) NUNCA passa - retorna
+ * BLOCK_DATA_INVALIDA, uma categoria propria, nunca confundida com
+ * BLOCK_ANTIGO (data valida mas anterior a janela) nem com um PASS
+ * silencioso.
+ *
+ * @param {string} occurredAt
+ * @param {string} dataOperacionalMinima - mesmo contrato de `occurredAt`
+ * @returns {'PASS'|'BLOCK_ANTIGO'|'BLOCK_DATA_INVALIDA'}
+ */
+function avaliarGateDataOperacional(occurredAt, dataOperacionalMinima) {
+  if (occurredAt == null || String(occurredAt).trim() === '') {
+    return 'BLOCK_DATA_INVALIDA';
+  }
+  let chave;
+  try {
+    chave = normalizarParaChaveComparavel(occurredAt, 'occurredAt');
+  } catch (erro) {
+    return 'BLOCK_DATA_INVALIDA';
+  }
+  const minima = normalizarParaChaveComparavel(dataOperacionalMinima, 'dataOperacionalMinima');
+  return chave >= minima ? 'PASS' : 'BLOCK_ANTIGO';
+}
+
+/**
+ * Constante operacional (HARDENING 2C) - inicio da janela em que vendas
+ * sao elegiveis para automacao, no MESMO contrato de `occurredAt`
+ * (horario local naive de America/Sao_Paulo, SEM "Z"/offset, SEM
+ * Date.parse/new Date()/epoch em nenhum ponto do calculo). Alterar este
+ * valor e a UNICA acao necessaria para mover a janela operacional -
+ * nunca inferido de `new Date()`/relogio do sistema.
+ */
+const DATA_OPERACIONAL_MINIMA = '2026-09-07T00:00:00.000';
+
 function calcularSha256DeArquivo(caminho, fsImpl) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
@@ -142,6 +187,17 @@ class BootstrapIntegracaoNex {
    *   (nunca inferido - mesma regra ja homologada na Fase F3.4).
    * @param {Object} [opcoes.fsImpl] - injetavel para testes (default: `fs`)
    * @param {Object} [opcoes.logger] - injetavel (default: LOGGER_NULO)
+   * @param {string} [opcoes.caminhoBaselineEscopo] - HARDENING 2E, so para
+   *   testes: sobrepoe o caminho do JSON de baseline do BROAD_SCOPE_GATE
+   *   (default: SERVICO/baseline-transacoes-conhecidas.json real). Nunca
+   *   definido em producao - o runner real nunca passa esta opcao.
+   * @param {{rowCountFloor?:number, minTransactionIdLimite?:number,
+   *   oldestOccurredAtLimite?:string, ancorasObrigatorias?:string[]}}
+   *   [opcoes.scopeGuardOverrides] - HARDENING 2E, so para testes:
+   *   sobrepoe os sinais estaticos secundarios do BROAD_SCOPE_GATE (ver
+   *   SERVICO/broad-scope-guard-nex.js). Nunca definido em producao - o
+   *   runner real nunca passa esta opcao, entao os valores reais
+   *   (ROW_COUNT_FLOOR=500 etc.) sempre se aplicam fora de testes.
    */
   constructor(opcoes) {
     const opc = opcoes || {};
@@ -155,6 +211,8 @@ class BootstrapIntegracaoNex {
     this._contextoClienteExtrato = opc.contextoClienteExtrato || undefined;
     this._fs = opc.fsImpl || fs;
     this._logger = opc.logger || LOGGER_NULO;
+    this._caminhoBaselineEscopo = opc.caminhoBaselineEscopo || undefined;
+    this._scopeGuardOverrides = opc.scopeGuardOverrides || null;
     // Pendencia da Fase F3.4 resolvida nesta fase (item 22): o indice de
     // clientes do orquestrador e reconstruido deterministicamente no
     // INICIO da sessao operacional, antes de qualquer arquivo de Vendas -
@@ -162,6 +220,44 @@ class BootstrapIntegracaoNex {
     // BootstrapIntegracaoNex (equivalente a "esta sessao/processo ja
     // carregou o indice uma vez").
     this._indiceClientesInicializado = false;
+  }
+
+  /**
+   * Monta o relatorio de retorno quando o BROAD_SCOPE_GATE bloqueia um
+   * arquivo inteiro (HARDENING 2E) - mesmo shape de relatorioVazio(), com
+   * o campo `scopeGate` preenchido para auditoria/log. Nenhum campo
+   * financeiro (enfileirados/ignoradosCheckpoint/etc.) e populado -
+   * literalmente zero avaliacao de evento ocorreu.
+   */
+  _relatorioBloqueadoPorEscopo(caminho, resultado, avaliacaoEscopo) {
+    return {
+      arquivo: caminho,
+      tipoExport: TIPOS_EXPORT.VENDAS,
+      totalLinhas: avaliacaoEscopo.rowCount != null ? avaliacaoEscopo.rowCount : 0,
+      eventosGerados: [],
+      readyToSend: [],
+      reviewRequired: [],
+      bloqueadosParaAutomacao: [],
+      enfileirados: [],
+      ignoradosCheckpoint: [],
+      ignoradosAntiReplay: [],
+      historicoAlterado: [],
+      bloqueadosPorDataOperacional: [],
+      bloqueadosPorDataInvalida: [],
+      conflitos: [],
+      erros: [],
+      indiceAtualizado: false,
+      erroArquivo: null,
+      scopeGate: {
+        resultado,
+        motivo: avaliacaoEscopo.motivo || null,
+        rowCount: avaliacaoEscopo.rowCount != null ? avaliacaoEscopo.rowCount : null,
+        uniqueIds: avaliacaoEscopo.uniqueIds != null ? avaliacaoEscopo.uniqueIds : null,
+        baselineIds: avaliacaoEscopo.baselineIds != null ? avaliacaoEscopo.baselineIds : null,
+        missingBaselineCount: avaliacaoEscopo.missingBaselineCount != null ? avaliacaoEscopo.missingBaselineCount : null,
+        anchorsMissing: avaliacaoEscopo.anchorsMissing || [],
+      },
+    };
   }
 
   /**
@@ -489,11 +585,68 @@ class BootstrapIntegracaoNex {
         ignoradosCheckpoint: [],
         ignoradosAntiReplay: [],
         historicoAlterado: [],
+        bloqueadosPorDataOperacional: [],
+        bloqueadosPorDataInvalida: [],
         conflitos: [],
         erros: [],
         indiceAtualizado: true,
         erroArquivo: null,
       };
+    }
+
+    // ---- BROAD_SCOPE_GATE (HARDENING 2E) - roda ANTES de qualquer outra
+    // coisa para arquivos de VENDAS: indice de clientes, dry-run,
+    // DATE_GATE, anti-replay, checkpoint, outbox. Zero-write, zero
+    // avaliacao financeira se o arquivo nao provar cobertura ampla
+    // suficiente (baseline-superset + sinais estaticos secundarios - ver
+    // SERVICO/broad-scope-guard-nex.js). Nunca aplicado a
+    // CLIENTES/EXTRATO_INDIVIDUAL - so Vendas -> Historico e a fonte cujo
+    // escopo (filtro visual do NEX) motivou esta fase. ----
+    if (tipoDetectado === TIPOS_EXPORT.VENDAS) {
+      let linhasBrutas;
+      try {
+        ({ linhas: linhasBrutas } = lerExportVendas(bufferAmostra, { nomeArquivo: path.basename(caminho) }));
+      } catch (erro) {
+        this._logger.error('bootstrap', 'ESCOPO_AMPLO_FALHA_LEITURA', { arquivo: caminho, erro: erro.message });
+        return this._relatorioBloqueadoPorEscopo(caminho, 'BLOCK_ESCOPO_INCOMPLETO', { motivo: 'FALHA_LEITURA_ARQUIVO' });
+      }
+      const vendasNormalizadas = linhasBrutas.map((l) => normalizarVendaNex(l));
+      // `baselineIdsOverride` (HARDENING 2E, so testes): permite a um teste
+      // fornecer a lista de IDs da baseline diretamente, sem ler nenhum
+      // arquivo - usado por testes que precisam desligar por completo a
+      // exigencia de superset (array vazio) para exercitar outra logica,
+      // nunca usado pelo runner real (producao sempre le a baseline real
+      // do disco via carregarBaseline()).
+      const overrides = this._scopeGuardOverrides || {};
+      const baseline = Array.isArray(overrides.baselineIdsOverride)
+        ? { valida: true, idsArray: overrides.baselineIdsOverride, ids: new Set(overrides.baselineIdsOverride) }
+        : carregarBaseline({ fsImpl: this._fs, caminho: this._caminhoBaselineEscopo });
+      const avaliacaoEscopo = avaliarEscopoAmplo(Object.assign({ vendasNormalizadas, baseline }, overrides));
+
+      if (avaliacaoEscopo.resultado !== 'PASS') {
+        this._logger.warn('bootstrap', avaliacaoEscopo.resultado === 'BLOCK_BASELINE_INVALIDA' ? 'ESCOPO_AMPLO_BASELINE_INVALIDA' : 'ESCOPO_AMPLO_INCOMPLETO', {
+          arquivo: caminho,
+          resultado: avaliacaoEscopo.resultado,
+          motivo: avaliacaoEscopo.motivo,
+          rowCount: avaliacaoEscopo.rowCount,
+          uniqueIds: avaliacaoEscopo.uniqueIds,
+          baselineIds: avaliacaoEscopo.baselineIds,
+          missingBaselineCount: avaliacaoEscopo.missingBaselineCount,
+          missingBaselineSample: avaliacaoEscopo.missingBaselineSample,
+          minTransactionId: avaliacaoEscopo.minTransactionId,
+          oldestOccurredAt: avaliacaoEscopo.oldestOccurredAt,
+          anchorsFound: avaliacaoEscopo.anchorsFound,
+          anchorsMissing: avaliacaoEscopo.anchorsMissing,
+        });
+        return this._relatorioBloqueadoPorEscopo(caminho, avaliacaoEscopo.resultado, avaliacaoEscopo);
+      }
+
+      this._logger.debug('bootstrap', 'ESCOPO_AMPLO_CONFIRMADO', {
+        arquivo: caminho,
+        rowCount: avaliacaoEscopo.rowCount,
+        uniqueIds: avaliacaoEscopo.uniqueIds,
+        baselineIds: avaliacaoEscopo.baselineIds,
+      });
     }
 
     // Pendencia F3.4 (item 22): antes de processar um arquivo de VENDAS em
@@ -515,6 +668,23 @@ class BootstrapIntegracaoNex {
     const todasComIdentidade = [...relatorioSimulado.readyToSend, ...relatorioSimulado.reviewRequired].filter((r) => r.event && r.event.eventId);
 
     for (const entrada of todasComIdentidade) {
+      // ---- GATE DE DATA OPERACIONAL (HARDENING 2C) - roda ANTES de
+      // qualquer coisa, inclusive antes de calcular o hash do evento.
+      // Short-circuit real: um evento bloqueado aqui NUNCA chega a
+      // avaliarEventoContraBaseline() (anti-replay) - nem calculamos o
+      // contentHash para ele neste loop. ----
+      const gateData = avaliarGateDataOperacional(entrada.event.occurredAt, DATA_OPERACIONAL_MINIMA);
+      if (gateData === 'BLOCK_ANTIGO') {
+        decisoesPorEventId.set(entrada.event.eventId, { permitido: false, motivo: 'BLOCK_ANTIGO' });
+        this._logger.debug('bootstrap', 'EVENTO_BLOQUEADO_DATA_OPERACIONAL', { eventId: entrada.event.eventId, occurredAt: entrada.event.occurredAt, dataOperacionalMinima: DATA_OPERACIONAL_MINIMA });
+        continue;
+      }
+      if (gateData === 'BLOCK_DATA_INVALIDA') {
+        decisoesPorEventId.set(entrada.event.eventId, { permitido: false, motivo: 'BLOCK_DATA_INVALIDA' });
+        this._logger.warn('bootstrap', 'EVENTO_BLOQUEADO_DATA_INVALIDA', { eventId: entrada.event.eventId, occurredAt: entrada.event.occurredAt });
+        continue;
+      }
+
       const contentHash = this._calcularHashDoEvento(entrada);
       // eslint-disable-next-line no-await-in-loop
       const avaliacao = await this._estado.avaliarEventoContraBaseline(entrada.event.eventId, contentHash);
@@ -555,22 +725,33 @@ class BootstrapIntegracaoNex {
     }
 
     // Pos-processamento ADITIVO (nao muda nada do que ja foi decidido pelo
-    // orquestrador): separa, dentro de `ignoradosAntiReplay`, os eventos
-    // BASELINE_CHANGED em um campo proprio `historicoAlterado`, para nunca
-    // serem confundidos com um simples "ja visto, identico" (que continua
-    // em `ignoradosAntiReplay`).
+    // orquestrador): o campo `ignoradosAntiReplay` do relatorio real
+    // agrega TODOS os eventIds que o filtroSincrono recusou - inclui tanto
+    // os motivos historicos (BASELINE_IDENTICO/BASELINE_CHANGED) quanto os
+    // novos motivos de data operacional (BLOCK_ANTIGO/BLOCK_DATA_INVALIDA,
+    // HARDENING 2C). Aqui cada eventId e reclassificado no campo proprio
+    // correspondente, para nunca misturar categorias com significados
+    // financeiros distintos.
     const historicoAlterado = [];
     const ignoradosIdenticos = [];
+    const bloqueadosPorDataOperacional = [];
+    const bloqueadosPorDataInvalida = [];
     for (const eventId of relatorioReal.ignoradosAntiReplay) {
       const decisao = decisoesPorEventId.get(eventId);
       if (decisao && decisao.motivo === 'BASELINE_CHANGED') {
         historicoAlterado.push({ eventId, hashAnterior: decisao.hashAnterior, hashNovo: decisao.hashNovo, classificacao: 'BASELINE_CHANGED' });
+      } else if (decisao && decisao.motivo === 'BLOCK_ANTIGO') {
+        bloqueadosPorDataOperacional.push(eventId);
+      } else if (decisao && decisao.motivo === 'BLOCK_DATA_INVALIDA') {
+        bloqueadosPorDataInvalida.push(eventId);
       } else {
         ignoradosIdenticos.push(eventId);
       }
     }
     relatorioReal.ignoradosAntiReplay = ignoradosIdenticos;
     relatorioReal.historicoAlterado = historicoAlterado;
+    relatorioReal.bloqueadosPorDataOperacional = bloqueadosPorDataOperacional;
+    relatorioReal.bloqueadosPorDataInvalida = bloqueadosPorDataInvalida;
 
     return relatorioReal;
   }
@@ -671,5 +852,7 @@ module.exports = {
   BootstrapNaoAprovadoError,
   IndiceClientesIndisponivelError,
   ehBaseline,
+  avaliarGateDataOperacional,
+  DATA_OPERACIONAL_MINIMA,
   normalizarParaChaveComparavel,
 };
