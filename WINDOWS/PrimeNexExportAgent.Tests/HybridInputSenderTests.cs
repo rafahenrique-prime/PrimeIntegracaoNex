@@ -1,3 +1,4 @@
+using PrimeNexExportAgent.Contracts;
 using PrimeNexExportAgent.Domain;
 using PrimeNexExportAgent.Tests.Fakes;
 using PrimeNexExportAgent.WindowsInput;
@@ -50,6 +51,7 @@ public sealed class HybridInputSenderTests
         Assert.Equal(1, foregroundSender.SendExportShortcutCalls);
         Assert.Equal(0, backgroundSender.SendExportShortcutCalls);
         Assert.Equal(Target, foregroundSender.LastTargetReceived);
+        Assert.Equal(HybridRouteDecision.V1Foreground, sender.CurrentDecision);
     }
 
     // ---- B: foreground e' outra janela do MESMO PID (ex.: TfrmIntercom/"Atendimento") -> ainda V1, zero V2 ----
@@ -79,6 +81,7 @@ public sealed class HybridInputSenderTests
         Assert.Equal(0, foregroundSender.SendExportShortcutCalls);
         Assert.Equal(1, backgroundSender.SendExportShortcutCalls);
         Assert.Equal(Target, backgroundSender.LastTargetReceived);
+        Assert.Equal(HybridRouteDecision.V2Background, sender.CurrentDecision);
     }
 
     // ---- D: GetForegroundWindow() e' consultado exatamente 1 vez - a rota nunca e' reconsultada dentro desta execucao ----
@@ -106,6 +109,7 @@ public sealed class HybridInputSenderTests
         Assert.NotNull(ex);
         Assert.Equal(1, foregroundSender.SendExportShortcutCalls);
         Assert.Equal(0, backgroundSender.SendExportShortcutCalls); // nunca um fallback para V2
+        Assert.Equal(HybridRouteDecision.V1Foreground, sender.CurrentDecision);
     }
 
     [Fact]
@@ -121,5 +125,6 @@ public sealed class HybridInputSenderTests
         Assert.NotNull(ex);
         Assert.Equal(0, foregroundSender.SendExportShortcutCalls); // nunca um fallback para V1
         Assert.Equal(1, backgroundSender.SendExportShortcutCalls);
+        Assert.Equal(HybridRouteDecision.V2Background, sender.CurrentDecision);
     }
 }

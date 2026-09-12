@@ -319,7 +319,17 @@ public sealed class ExportAgentOrchestrator
     private void Log(Guid runId, AgentStage stage, AgentErrorCode? errorCode = null, string? fileName = null, string? reason = null)
     {
         var errorCodeText = errorCode is null or AgentErrorCode.None ? null : errorCode.ToString();
-        _logger.Log(new AgentLogEvent(_clock.Now, runId, stage.ToString(), errorCodeText, fileName, reason));
+        var routeContext = (_inputSender as IHybridRouteDecisionContext)?.CurrentDecision;
+        _logger.Log(new AgentLogEvent(
+            _clock.Now,
+            runId,
+            stage.ToString(),
+            errorCodeText,
+            fileName,
+            reason,
+            routeContext?.HybridRoute,
+            routeContext?.NexPosition,
+            routeContext?.RouteReason));
     }
 
     /// <summary>Variante segura de Log() para uso EXCLUSIVO dentro de blocos

@@ -6,6 +6,8 @@
 
 ## 1. Visão geral
 
+Telemetria da rota Hybrid e da posição do NEX: [Observability V1 — Hybrid Route and NEX Position](OBSERVABILITY-PRIME-NEX-HYBRID-V1.md).
+
 Fluxo oficial:
 
 ```

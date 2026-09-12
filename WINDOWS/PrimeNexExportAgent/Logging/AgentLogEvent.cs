@@ -21,7 +21,22 @@ public sealed class AgentLogEvent
     /// agora preservado quando fornecido.</summary>
     public string? Reason { get; }
 
-    public AgentLogEvent(DateTime timestamp, Guid runId, string stage, string? errorCode = null, string? fileName = null, string? reason = null)
+    /// <summary>Telemetria opcional do Hybrid V3. Permanece nula para
+    /// modos sem decisao Hybrid ou eventos emitidos antes da decisao.</summary>
+    public string? HybridRoute { get; }
+    public string? NexPosition { get; }
+    public string? RouteReason { get; }
+
+    public AgentLogEvent(
+        DateTime timestamp,
+        Guid runId,
+        string stage,
+        string? errorCode = null,
+        string? fileName = null,
+        string? reason = null,
+        string? hybridRoute = null,
+        string? nexPosition = null,
+        string? routeReason = null)
     {
         Timestamp = timestamp;
         RunId = runId;
@@ -29,6 +44,9 @@ public sealed class AgentLogEvent
         ErrorCode = errorCode;
         FileName = fileName;
         Reason = reason;
+        HybridRoute = hybridRoute;
+        NexPosition = nexPosition;
+        RouteReason = routeReason;
     }
 }
 

@@ -23,12 +23,14 @@ namespace PrimeNexExportAgent.WindowsInput;
 /// revalidacoes internas de V1 (T3/T4) ou V2 (IsNexForeground antes do
 /// WM_COMMAND), nunca por uma segunda decisao de rota aqui.
 /// </summary>
-public sealed class HybridInputSender : IInputSender
+public sealed class HybridInputSender : IInputSender, IHybridRouteDecisionContext
 {
     private readonly INativeWindowApi _nativeWindows;
     private readonly IForegroundReader _foregroundReader;
     private readonly IInputSender _foregroundSender;
     private readonly IInputSender _backgroundSender;
+
+    public HybridRouteDecision? CurrentDecision { get; private set; }
 
     public HybridInputSender(
         INativeWindowApi nativeWindows,
@@ -52,10 +54,12 @@ public sealed class HybridInputSender : IInputSender
         // deste ponto reconsulta foreground para trocar de sender. ----
         if (isNexForeground)
         {
+            CurrentDecision = HybridRouteDecision.V1Foreground;
             _foregroundSender.SendExportShortcut(target);
         }
         else
         {
+            CurrentDecision = HybridRouteDecision.V2Background;
             _backgroundSender.SendExportShortcut(target);
         }
     }

@@ -18,7 +18,10 @@ public sealed class ConsoleAgentLogger : IAgentLogger
 {
     public void Log(AgentLogEvent evt)
     {
-        var json = JsonSerializer.Serialize(new
+        Console.WriteLine(Serialize(evt));
+    }
+
+    internal static string Serialize(AgentLogEvent evt) => JsonSerializer.Serialize(new
         {
             timestamp = evt.Timestamp.ToString("O"),
             runId = evt.RunId,
@@ -26,7 +29,8 @@ public sealed class ConsoleAgentLogger : IAgentLogger
             errorCode = evt.ErrorCode,
             fileName = evt.FileName,
             reason = evt.Reason,
+            hybridRoute = evt.HybridRoute,
+            nexPosition = evt.NexPosition,
+            routeReason = evt.RouteReason,
         });
-        Console.WriteLine(json);
-    }
 }

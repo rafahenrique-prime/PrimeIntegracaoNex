@@ -239,6 +239,34 @@ public interface IInputSender
     void SendExportShortcut(NexAdminWindowIdentity target);
 }
 
+/// <summary>Contexto opcional e somente-leitura da decisao tomada pelo
+/// Hybrid V3. IInputSender permanece inalterado para V1/V2 standalone.</summary>
+public interface IHybridRouteDecisionContext
+{
+    HybridRouteDecision? CurrentDecision { get; }
+}
+
+/// <summary>Valores canonicos da telemetria de rota Hybrid. RouteReason e'
+/// deliberadamente deterministico; o diagnostico tecnico livre continua em
+/// AgentLogEvent.Reason.</summary>
+public sealed record HybridRouteDecision(string HybridRoute, string NexPosition, string RouteReason)
+{
+    public static readonly HybridRouteDecision V1Foreground = new(
+        "V1", "FOREGROUND", "FOREGROUND_HWND_OR_PID_MATCHED_NEX");
+
+    public static readonly HybridRouteDecision V2Background = new(
+        "V2", "BACKGROUND", "FOREGROUND_NOT_OWNED_BY_NEX");
+
+    public static readonly HybridRouteDecision NoneClosed = new(
+        "NONE", "CLOSED", "NEX_CLOSED");
+
+    public static readonly HybridRouteDecision NoneMinimized = new(
+        "NONE", "MINIMIZED", "NEX_MINIMIZED");
+
+    public static readonly HybridRouteDecision NoneUnknown = new(
+        "NONE", "UNKNOWN", "NEX_BLOCKING_UNKNOWN");
+}
+
 /// <summary>F6.14B2.5 - fronteira somente-leitura para consultar qual HWND
 /// esta atualmente em foreground. Deliberadamente MINIMA - nunca inclui
 /// SetForegroundWindow (isso pertence exclusivamente a IInputNativeApi,

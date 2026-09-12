@@ -65,19 +65,19 @@ internal static class RunOnceScheduledHybridEntrypoint
         switch (classification.State)
         {
             case NexRuntimeState.Closed:
-                TryLog(logger, clock, runId, "NEX_CLOSED", classification.Reason);
+                TryLog(logger, clock, runId, "NEX_CLOSED", classification.Reason, HybridRouteDecision.NoneClosed);
                 // Silencioso por design (mesma justificativa de SUCCESS: NEX
                 // fechado fora do expediente e' o estado mais frequente e
                 // esperado - alarme aqui viraria ruido).
                 return new HybridRunResult(runId, NexRuntimeState.Closed, null, classification.Reason);
 
             case NexRuntimeState.Minimized:
-                TryLog(logger, clock, runId, "NEX_MINIMIZED", classification.Reason);
+                TryLog(logger, clock, runId, "NEX_MINIMIZED", classification.Reason, HybridRouteDecision.NoneMinimized);
                 sounds.PlayMinimizedWarning();
                 return new HybridRunResult(runId, NexRuntimeState.Minimized, null, classification.Reason);
 
             case NexRuntimeState.BlockingUnknown:
-                TryLog(logger, clock, runId, "NEX_BLOCKING_UNKNOWN", classification.Reason);
+                TryLog(logger, clock, runId, "NEX_BLOCKING_UNKNOWN", classification.Reason, HybridRouteDecision.NoneUnknown);
                 // Silencioso + fail-closed - nenhuma tentativa otimista.
                 return new HybridRunResult(runId, NexRuntimeState.BlockingUnknown, null, classification.Reason);
 
@@ -103,11 +103,24 @@ internal static class RunOnceScheduledHybridEntrypoint
         }
     }
 
-    private static void TryLog(IAgentLogger logger, IClock clock, Guid runId, string stage, string reason)
+    private static void TryLog(
+        IAgentLogger logger,
+        IClock clock,
+        Guid runId,
+        string stage,
+        string reason,
+        HybridRouteDecision decision)
     {
         try
         {
-            logger.Log(new AgentLogEvent(clock.Now, runId, stage, reason: reason));
+            logger.Log(new AgentLogEvent(
+                clock.Now,
+                runId,
+                stage,
+                reason: reason,
+                hybridRoute: decision.HybridRoute,
+                nexPosition: decision.NexPosition,
+                routeReason: decision.RouteReason));
         }
         catch
         {

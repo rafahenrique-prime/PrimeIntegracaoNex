@@ -1,3 +1,4 @@
+using PrimeNexExportAgent.Contracts;
 using PrimeNexExportAgent.Domain;
 using Xunit;
 
@@ -12,6 +13,26 @@ namespace PrimeNexExportAgent.Tests;
 /// </summary>
 public sealed class ExportAgentOrchestratorTests
 {
+    private sealed class HybridContextInputSender : IInputSender, IHybridRouteDecisionContext
+    {
+        public HybridRouteDecision? CurrentDecision { get; private set; }
+        public int Calls { get; private set; }
+        public Exception? ThrowOnSend { get; init; }
+
+        public void SendExportShortcut(NexAdminWindowIdentity target)
+        {
+            Calls++;
+            CurrentDecision = HybridRouteDecision.V2Background;
+            if (ThrowOnSend is not null) throw ThrowOnSend;
+        }
+    }
+
+    private static ExportAgentOrchestrator BuildWithInput(OrchestratorFixture fx, IInputSender input) => new(
+        fx.Lock, fx.SessionInspector, fx.NexWindowInspector, input,
+        fx.SaveDialogWaiter, fx.SaveDialogInspector, fx.SaveDialogController, fx.Committer,
+        fx.Watcher, fx.ExportValidator, fx.AtomicPublisher, fx.Logger, fx.Clock,
+        OrchestratorFixture.ExportStagePath, OrchestratorFixture.ExportadosPath);
+
     // ---------- A. Happy path completo mockado ----------
     [Fact]
     public void A_HappyPath_AtingeSuccessComExatamenteUmaChamadaDeCadaAcao()
@@ -28,6 +49,12 @@ public sealed class ExportAgentOrchestratorTests
         Assert.Equal(1, fx.Lock.TryAcquireCalls);
         Assert.Equal(1, fx.Lock.ReleaseCalls);
         Assert.NotNull(result.PublishedFilePath);
+        Assert.All(fx.Logger.Events, e =>
+        {
+            Assert.Null(e.HybridRoute);
+            Assert.Null(e.NexPosition);
+            Assert.Null(e.RouteReason);
+        });
     }
 
     // ---------- B. Lock ocupado ----------
@@ -646,5 +673,38 @@ public sealed class ExportAgentOrchestratorTests
 
         Assert.Equal(identidadeEsperada, fx.Committer.LastTargetReceived);
         Assert.Equal(fx.SaveDialogInspector.IdentityResult.Dialog, fx.Committer.LastExpectedDialogReceived);
+    }
+
+    [Fact]
+    public void Y_ContextoHybridAposDecisao_EPreservadoNoExportTriggeredESuccess()
+    {
+        var fx = new OrchestratorFixture();
+        var input = new HybridContextInputSender();
+
+        var result = BuildWithInput(fx, input).Run();
+
+        Assert.True(result.Success);
+        Assert.Equal(1, input.Calls);
+        Assert.All(fx.Logger.Events.Where(e => e.Stage is nameof(AgentStage.ExportTriggered) or nameof(AgentStage.Success)), e =>
+        {
+            Assert.Equal("V2", e.HybridRoute);
+            Assert.Equal("BACKGROUND", e.NexPosition);
+            Assert.Equal("FOREGROUND_NOT_OWNED_BY_NEX", e.RouteReason);
+        });
+    }
+
+    [Fact]
+    public void Z_ContextoHybridERegistradoQuandoSenderLanca()
+    {
+        var fx = new OrchestratorFixture();
+        var input = new HybridContextInputSender { ThrowOnSend = new InvalidOperationException("falha apos decisao") };
+
+        var result = BuildWithInput(fx, input).Run();
+
+        Assert.Equal(AgentStage.Failed, result.FinalStage);
+        var failed = Assert.Single(fx.Logger.Events, e => e.Stage == nameof(AgentStage.Failed));
+        Assert.Equal("V2", failed.HybridRoute);
+        Assert.Equal("BACKGROUND", failed.NexPosition);
+        Assert.Equal("FOREGROUND_NOT_OWNED_BY_NEX", failed.RouteReason);
     }
 }

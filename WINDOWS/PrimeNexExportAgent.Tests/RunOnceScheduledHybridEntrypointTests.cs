@@ -79,7 +79,10 @@ public sealed class RunOnceScheduledHybridEntrypointTests
         Assert.Equal(0, buildCalls);
         Assert.Equal(0, sounds.MinimizedWarningCalls);
         Assert.Equal(0, sounds.TechnicalFailureAfterActionCalls);
-        Assert.Contains(logger.Events, e => e.Stage == "NEX_CLOSED");
+        Assert.Contains(logger.Events, e => e.Stage == "NEX_CLOSED"
+            && e.HybridRoute == "NONE"
+            && e.NexPosition == "CLOSED"
+            && e.RouteReason == "NEX_CLOSED");
     }
 
     // ---- B: Minimized -> zero orchestrator, exatamente 1 aviso de minimized (2 beeps curtos) ----
@@ -101,7 +104,10 @@ public sealed class RunOnceScheduledHybridEntrypointTests
         Assert.Equal(0, buildCalls);
         Assert.Equal(1, sounds.MinimizedWarningCalls);
         Assert.Equal(0, sounds.TechnicalFailureAfterActionCalls);
-        Assert.Contains(logger.Events, e => e.Stage == "NEX_MINIMIZED");
+        Assert.Contains(logger.Events, e => e.Stage == "NEX_MINIMIZED"
+            && e.HybridRoute == "NONE"
+            && e.NexPosition == "MINIMIZED"
+            && e.RouteReason == "NEX_MINIMIZED");
     }
 
     // ---- C: BlockingUnknown -> zero orchestrator, zero beep, fail-closed silencioso ----
@@ -123,7 +129,11 @@ public sealed class RunOnceScheduledHybridEntrypointTests
         Assert.Equal(0, buildCalls);
         Assert.Equal(0, sounds.MinimizedWarningCalls);
         Assert.Equal(0, sounds.TechnicalFailureAfterActionCalls);
-        Assert.Contains(logger.Events, e => e.Stage == "NEX_BLOCKING_UNKNOWN" && e.Reason == "TApplication ambigua");
+        Assert.Contains(logger.Events, e => e.Stage == "NEX_BLOCKING_UNKNOWN"
+            && e.Reason == "TApplication ambigua"
+            && e.HybridRoute == "NONE"
+            && e.NexPosition == "UNKNOWN"
+            && e.RouteReason == "NEX_BLOCKING_UNKNOWN");
     }
 
     // ---- D: Open + Falha ANTES da mutacao (MutationAttempted=false) -> zero 3-beep ----
