@@ -74,7 +74,7 @@ public sealed class ExportAgentOrchestrator
         _exportStagePath = exportStagePath;
         _exportadosPath = exportadosPath;
         _expectedFileType = expectedFileType;
-        _watcherTimeout = watcherTimeout ?? TimeSpan.FromSeconds(15);
+        _watcherTimeout = watcherTimeout ?? TimeSpan.FromSeconds(30);
     }
 
     public AgentRunResult Run()
@@ -266,7 +266,12 @@ public sealed class ExportAgentOrchestrator
                 var stability = _exportStageWatcher.WaitForExpectedFileOnly(_exportStagePath, fileName, _watcherTimeout);
                 if (!stability.Passed)
                 {
-                    Log(runId, AgentStage.Failed, stability.ErrorCode, fileName: fileName);
+                    Log(
+                        runId,
+                        AgentStage.Failed,
+                        stability.ErrorCode,
+                        fileName: fileName,
+                        reason: stability.Reason);
                     return AgentRunResult.Stop(runId, AgentStage.Failed, stability.ErrorCode);
                 }
                 Log(runId, AgentStage.FileStable, fileName: fileName);

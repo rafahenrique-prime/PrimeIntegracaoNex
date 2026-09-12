@@ -548,9 +548,17 @@ public sealed class ExportAgentOrchestratorTests
         var result = fx.BuildOrchestrator().Run();
 
         Assert.False(result.Success);
+        Assert.Equal(AgentStage.Failed, result.FinalStage);
+        Assert.Equal(AgentErrorCode.FileUnstable, result.ErrorCode);
         Assert.Equal(1, fx.Committer.CommitOnceCalls); // nenhuma segunda tentativa de clique
+        Assert.Equal(TimeSpan.FromSeconds(30), fx.Watcher.LastTimeoutReceived);
         Assert.Equal(0, fx.Spy.CountOf("Validate"));
         Assert.Equal(0, fx.Spy.CountOf("Publish"));
+
+        var failedEvent = fx.Logger.Events.Last();
+        Assert.Equal(nameof(AgentStage.Failed), failedEvent.Stage);
+        Assert.Equal(nameof(AgentErrorCode.FileUnstable), failedEvent.ErrorCode);
+        Assert.Equal("timeout aguardando estabilidade", failedEvent.Reason);
     }
 
     // ---------- S. Watcher PASS, Reader FAIL -> zero Publisher ----------

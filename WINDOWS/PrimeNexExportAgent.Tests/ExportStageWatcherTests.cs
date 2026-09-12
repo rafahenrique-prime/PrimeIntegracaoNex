@@ -447,4 +447,47 @@ public sealed class ExportStageWatcherTests : IDisposable
         Assert.DoesNotContain("IInputSender", ctorParams);
         Assert.DoesNotContain("INexWindowInspector", ctorParams);
     }
+
+    [Fact]
+    public void O_XlsSurgeAposVinteETresSegundos_ComTimeoutDeTrinta_PassAposTresObservacoes()
+    {
+        var clock = new FakeClock();
+        var delay = new FakeDelay();
+        var startedAt = clock.Now;
+        var fileCreated = false;
+
+        delay.OnWait = d =>
+        {
+            clock.Now = clock.Now.Add(d);
+            if (!fileCreated && clock.Now - startedAt >= TimeSpan.FromSeconds(23))
+            {
+                WriteFile("foo.xls", 1761280, new DateTime(2026, 9, 12, 5, 35, 29, DateTimeKind.Utc));
+                fileCreated = true;
+            }
+        };
+
+        var watcher = new PollingExportStageWatcher(delay, clock, TimeSpan.FromMilliseconds(300));
+
+        var result = watcher.WaitForExpectedFileOnly(_tempDir, "foo.xls", TimeSpan.FromSeconds(30));
+
+        Assert.True(fileCreated);
+        Assert.True(result.Passed);
+        Assert.Equal(79, delay.WaitCalls);
+        Assert.Equal(TimeSpan.FromMilliseconds(23700), clock.Now - startedAt);
+    }
+
+    [Fact]
+    public void P_NenhumArquivoAteTimeoutDeTrinta_FalhaFileUnstable()
+    {
+        var (delay, clock, watcher) = BuildFixture(pollInterval: TimeSpan.FromMilliseconds(300));
+        var startedAt = clock.Now;
+
+        var result = watcher.WaitForExpectedFileOnly(_tempDir, "foo.xls", TimeSpan.FromSeconds(30));
+
+        Assert.False(result.Passed);
+        Assert.Equal(AgentErrorCode.FileUnstable, result.ErrorCode);
+        Assert.Contains("nenhum arquivo apareceu", result.Reason);
+        Assert.Equal(100, delay.WaitCalls);
+        Assert.Equal(TimeSpan.FromSeconds(30), clock.Now - startedAt);
+    }
 }

@@ -308,6 +308,7 @@ public sealed class FakeExportStageWatcher : IExportStageWatcher
     public int ConfirmEmptyBeforeActionCalls { get; private set; }
     public int WaitForExpectedFileOnlyCalls { get; private set; }
     public string? LastExpectedFileNameReceived { get; private set; }
+    public TimeSpan? LastTimeoutReceived { get; private set; }
 
     /// <summary>F6.14B2.9C: executado no exato momento de
     /// WaitForExpectedFileOnly - usado por testes para simular um agente
@@ -333,6 +334,7 @@ public sealed class FakeExportStageWatcher : IExportStageWatcher
     {
         WaitForExpectedFileOnlyCalls++;
         LastExpectedFileNameReceived = expectedFileName;
+        LastTimeoutReceived = timeout;
         _spy?.Record(nameof(WaitForExpectedFileOnly));
         OnWait?.Invoke();
         return WaitResult;
