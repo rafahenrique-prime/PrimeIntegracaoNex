@@ -590,17 +590,24 @@ public sealed class ExportAgentOrchestratorTests
 
     // ---------- S. Watcher PASS, Reader FAIL -> zero Publisher ----------
     [Fact]
-    public void S_ReaderRejeita_ZeroPublisher()
+    public void S_ReaderRejeita_PreservaReasonEZeroPublisher()
     {
         var fx = new OrchestratorFixture();
-        fx.ExportValidator.Result = ExportValidationResult.Fail(AgentErrorCode.ReaderRejected, "colunas_inesperadas");
+        fx.ExportValidator.Result = ExportValidationResult.Fail(AgentErrorCode.UnexpectedException, "reason deterministico de teste");
 
         var result = fx.BuildOrchestrator().Run();
 
         Assert.False(result.Success);
+        Assert.Equal(AgentStage.Failed, result.FinalStage);
+        Assert.Equal(AgentErrorCode.UnexpectedException, result.ErrorCode);
         Assert.Equal(1, fx.Committer.CommitOnceCalls);
         Assert.Equal(1, fx.Spy.CountOf("Validate"));
         Assert.Equal(0, fx.Spy.CountOf("Publish"));
+
+        var failedEvent = fx.Logger.Events.Last();
+        Assert.Equal(nameof(AgentStage.Failed), failedEvent.Stage);
+        Assert.Equal(nameof(AgentErrorCode.UnexpectedException), failedEvent.ErrorCode);
+        Assert.Equal("reason deterministico de teste", failedEvent.Reason);
     }
 
     // ---------- T. Cadeia inteira PASS -> exatamente 1 de cada ----------

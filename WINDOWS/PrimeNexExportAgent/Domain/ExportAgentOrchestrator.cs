@@ -281,7 +281,7 @@ public sealed class ExportAgentOrchestrator
                 if (!validation.Valid || validation.RecordCount == 0)
                 {
                     var code = validation.Valid ? AgentErrorCode.ReaderRejected : validation.ErrorCode;
-                    Log(runId, AgentStage.Failed, code, fileName: fileName);
+                    Log(runId, AgentStage.Failed, code, fileName: fileName, reason: validation.Reason);
                     return AgentRunResult.Stop(runId, AgentStage.Failed, code);
                 }
                 Log(runId, AgentStage.ReaderValidated, fileName: fileName);
