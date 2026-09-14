@@ -6,7 +6,7 @@
 
 ## 1. Visão geral
 
-Telemetria da rota Hybrid e da posição do NEX: [Observability V1 — Hybrid Route and NEX Position](OBSERVABILITY-PRIME-NEX-HYBRID-V1.md).
+Telemetria da rota Hybrid e da posição do NEX: [Observability V1 — Hybrid Route and NEX Position](OBSERVABILITY-PRIME-NEX-HYBRID-V1.md). O PRIME NEX Monitor V2 permanece somente leitura: “Próxima tentativa automática” é o horário da Task (não uma exportação garantida), “Próxima atualização do Monitor” é o próximo refresh local, “Execução atual” mostra somente eventos JSONL já observados, e “Bloqueio atual” só indica G13 quando o staging não vazio coincide com a sequência comprovada. O aviso de Monitor em primeiro plano apenas informa que o NEX em background tenderá a usar V2; não altera foco. Quando presente, `reason` preserva o detalhe técnico do JSONL.
 
 Fluxo oficial:
 
