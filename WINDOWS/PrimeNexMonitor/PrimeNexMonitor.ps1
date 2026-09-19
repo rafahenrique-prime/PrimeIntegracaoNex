@@ -62,6 +62,70 @@ function New-Section {
     return [pscustomobject]@{ Box = $box; Table = $table }
 }
 
+function Add-HealthRow {
+    param(
+        [System.Windows.Forms.TableLayoutPanel]$Table,
+        [string]$Caption
+    )
+
+    $row = $Table.RowCount
+    $Table.RowCount++
+
+    $captionLabel = New-ValueLabel
+    $captionLabel.Text = $Caption
+    $captionLabel.ForeColor = [System.Drawing.Color]::FromArgb(95, 105, 118)
+
+    $summaryLabel = New-ValueLabel
+    $summaryLabel.Text = '-'
+
+    $Table.Controls.Add($captionLabel, 0, $row)
+    $Table.Controls.Add($summaryLabel, 1, $row)
+
+    $detailRow = $Table.RowCount
+    $Table.RowCount++
+    $detailLabel = New-ValueLabel
+    $detailLabel.Font = [System.Drawing.Font]::new('Segoe UI', 8.5)
+    $detailLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 90, 30)
+    $detailLabel.AutoEllipsis = $true
+    $detailLabel.Text = ''
+    $detailLabel.Visible = $false
+    $Table.Controls.Add($detailLabel, 1, $detailRow)
+
+    return [pscustomobject]@{ Summary = $summaryLabel; Detail = $detailLabel }
+}
+
+function Set-HealthRow {
+    param(
+        [object]$Row,
+        [object]$Health
+    )
+
+    if ($null -eq $Health) {
+        $Row.Summary.Text = '-'
+        $Row.Detail.Visible = $false
+        return
+    }
+
+    $icone = switch ($Health.Level) {
+        'PROBLEMA' { [char]0x25CF + ' ' }
+        'ATENCAO'  { [char]0x25CF + ' ' }
+        default    { [char]0x25CF + ' ' }
+    }
+    $cor = switch ($Health.Level) {
+        'PROBLEMA' { [System.Drawing.Color]::FromArgb(190, 45, 55) }
+        'ATENCAO'  { [System.Drawing.Color]::FromArgb(164, 112, 0) }
+        default    { [System.Drawing.Color]::FromArgb(25, 135, 84) }
+    }
+
+    $Row.Summary.Text = $icone + (Get-DisplayValue -Value $Health.Summary)
+    $Row.Summary.ForeColor = $cor
+
+    $detalhe = Get-DisplayValue -Value $Health.Detail -Fallback ''
+    $mostrar = ($Health.Level -ne 'NORMAL') -and -not [string]::IsNullOrWhiteSpace($detalhe)
+    $Row.Detail.Text = $detalhe
+    $Row.Detail.Visible = $mostrar
+}
+
 $form = [System.Windows.Forms.Form]::new()
 $form.Text = 'PRIME NEX Monitor V2'
 $form.StartPosition = 'CenterScreen'
@@ -109,6 +173,11 @@ $currentRunStart = Add-InformationRow -Table $currentRunSection.Table -Caption '
 $currentRunStage = Add-InformationRow -Table $currentRunSection.Table -Caption 'Ultimo stage' -Name 'CurrentRunStage'
 $currentRunRoute = Add-InformationRow -Table $currentRunSection.Table -Caption 'Rota / posicao' -Name 'CurrentRunRoute'
 $currentRunSection.Box.Visible = $false
+
+$healthSection = New-Section -Title 'SAUDE OPERACIONAL' -Height 128
+$healthOutbox = Add-HealthRow -Table $healthSection.Table -Caption 'PRIME COBRANCAS'
+$healthStage = Add-HealthRow -Table $healthSection.Table -Caption 'EXPORT_STAGE'
+$healthSuccess = Add-HealthRow -Table $healthSection.Table -Caption 'ULTIMO SUCCESS'
 
 $content = [System.Windows.Forms.TableLayoutPanel]::new()
 $content.Dock = 'Fill'
@@ -213,13 +282,19 @@ $updatedLabel.TextAlign = 'MiddleRight'
 $updatedLabel.ForeColor = [System.Drawing.Color]::FromArgb(100, 108, 120)
 
 $root.Controls.Add($statusPanel)
+$root.Controls.Add($healthSection.Box)
 $root.Controls.Add($currentRunSection.Box)
 $root.Controls.Add($content)
 $root.Controls.Add($updatedLabel)
-$root.Controls.SetChildIndex($statusPanel, 3)
+$root.Controls.SetChildIndex($statusPanel, 4)
+$root.Controls.SetChildIndex($healthSection.Box, 3)
 $root.Controls.SetChildIndex($currentRunSection.Box, 2)
 $root.Controls.SetChildIndex($content, 1)
 $root.Controls.SetChildIndex($updatedLabel, 0)
+
+$script:OutboxCache = $null
+$script:OutboxCacheAt = [datetime]::MinValue
+$script:OutboxFailureStreak = 0
 
 $refreshAction = {
     $timer.Enabled = $false
@@ -229,7 +304,27 @@ $refreshAction = {
         $exportSnapshot = Get-ExportSnapshot
         $stageSnapshot = Get-ExportStageSnapshot
         $nexSnapshot = Get-NexSnapshot
-        $overall = Get-OverallStatus -Task $taskSnapshot -Pipeline $pipelineSnapshot -Export $exportSnapshot -Nex $nexSnapshot
+
+        # A outbox tem cadencia propria (60 s): a fila muda devagar e cada
+        # leitura cria um processo filho de consulta.
+        $agora = Get-Date
+        if ($null -eq $script:OutboxCache -or ($agora - $script:OutboxCacheAt).TotalMilliseconds -ge $script:OutboxRefreshMilliseconds) {
+            $script:OutboxCache = Get-OutboxSnapshot
+            $script:OutboxCacheAt = $agora
+            if ($script:OutboxCache.Available) { $script:OutboxFailureStreak = 0 }
+            else { $script:OutboxFailureStreak++ }
+        }
+
+        $isG13Blocked = Test-G13CurrentBlock -Stage $stageSnapshot -Pipeline $pipelineSnapshot
+        $outboxHealth = Get-OutboxHealth -Outbox $script:OutboxCache -ConsecutiveFailures $script:OutboxFailureStreak
+        $stageHealth = Get-StageHealth -Stage $stageSnapshot -G13Blocked $isG13Blocked
+        $successHealth = Get-SuccessHealth -Pipeline $pipelineSnapshot -Nex $nexSnapshot
+
+        Set-HealthRow -Row $healthOutbox -Health $outboxHealth
+        Set-HealthRow -Row $healthStage -Health $stageHealth
+        Set-HealthRow -Row $healthSuccess -Health $successHealth
+
+        $overall = Get-OverallStatus -Task $taskSnapshot -Pipeline $pipelineSnapshot -Export $exportSnapshot -Nex $nexSnapshot -OutboxHealth $outboxHealth -StageHealth $stageHealth -SuccessHealth $successHealth
 
         $palette = switch ($overall.Level) {
             'NORMAL'   { @([System.Drawing.Color]::FromArgb(25, 135, 84), [System.Drawing.Color]::FromArgb(225, 244, 234)) }
@@ -328,7 +423,6 @@ $refreshAction = {
             $lastSuccessSize.Text = '-'
         }
 
-        $isG13Blocked = Test-G13CurrentBlock -Stage $stageSnapshot -Pipeline $pipelineSnapshot
         $blockSection.Box.Visible = $isG13Blocked
         if ($isG13Blocked) {
             $blockValue.Text = 'Exportacao bloqueada: existe arquivo pendente em EXPORT_STAGE.'

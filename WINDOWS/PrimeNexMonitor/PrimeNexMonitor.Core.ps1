@@ -82,6 +82,40 @@ $script:TerminalStages = @(
 )
 $script:UnsafeCodes = @('UnsafeState', 'NEX_CLOSED', 'NEX_MINIMIZED')
 
+$script:NodeExePath = 'C:\Program Files\nodejs\node.exe'
+$script:OutboxDbPath = 'C:\Nex\PrimeIntegracaoNex\OUTPUT\integracao-nex.db'
+$script:OutboxQueryTimeoutMs = 3000
+$script:OutboxRefreshMilliseconds = 60000
+$script:OutboxUnavailableGraceReads = 3
+$script:TransientGraceMinutes = 2
+$script:OutboxOpenActionMinutes = 10
+$script:StageActionMinutes = 30
+$script:SuccessAttentionCycles = 3
+$script:SuccessActionCycles = 10
+$script:ErrorDetailMaxChars = 200
+$script:OutboxOpenStates = @('PENDING', 'RETRY', 'SENDING', 'FAILED')
+$script:CycleFileNamePattern = '^vendas-auto-\d{8}-\d{6}\.(xls|csv)$'
+
+# Ciclos que indicam "o sistema estava pronto e mesmo assim nao exportou".
+# NEX_CLOSED/NEX_MINIMIZED/NexNotFound/SkippedBusy/SkippedSessionUnavailable/
+# SkippedNotForeground ficam de fora de proposito: nao contam e nao zeram, para
+# que noite e usuario operando o NEX nunca virem alarme.
+$script:AnomalousStages = @('UnsafeState', 'Failed', 'NEX_BLOCKING_UNKNOWN')
+
+# Somente SELECT. O caminho do banco chega por argv (node le o script por stdin,
+# entao argv[2]), nunca concatenado no texto. Ver Get-OutboxSnapshot.
+$script:OutboxQueryScript = @'
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(process.argv[2], { readOnly: true });
+const out = {
+  byStatus: db.prepare("SELECT status, COUNT(*) n FROM outbox GROUP BY status").all(),
+  oldestOpen: db.prepare("SELECT event_id, nex_transaction_id, status, tentativas, created_at, updated_at, ultimo_erro FROM outbox WHERE status IN ('PENDING','RETRY','SENDING','FAILED') ORDER BY created_at ASC LIMIT 1").get() ?? null,
+  lastDone: db.prepare("SELECT event_id, status, result, http_status, updated_at FROM outbox WHERE status IN ('SENT','REVIEW_STORED') ORDER BY updated_at DESC LIMIT 1").get() ?? null
+};
+db.close();
+process.stdout.write(JSON.stringify(out));
+'@
+
 function Get-DisplayValue {
     param(
         [AllowNull()]
@@ -216,6 +250,8 @@ function Get-PipelineSnapshot {
         CurrentRun       = $null
         InProgress      = $false
         InvalidLines    = 0
+        AnomalousStreak = 0
+        StreakDominantCode = $null
         Error           = $null
     }
 
@@ -235,6 +271,10 @@ function Get-PipelineSnapshot {
         $successRunIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $terminalRunRecords = @{}
         $validRecordCount = 0
+        # Streak calculado no mesmo laco, do terminal mais recente para tras.
+        # Fecha no primeiro Success; estagios neutros nao contam e nao zeram.
+        $streakClosed = $false
+        $streakCodes = @{}
 
         foreach ($logFile in $logFiles) {
             $fileRecords = [System.Collections.Generic.List[object]]::new()
@@ -274,6 +314,17 @@ function Get-PipelineSnapshot {
                 if ($runId -and ($script:TerminalStages -contains $stage) -and $terminalRunIds.Add($runId)) {
                     $terminalRecords.Add($record)
                     $terminalRunRecords[$runId] = @($fileRecords | Where-Object { (Get-DisplayValue -Value $_.runId -Fallback '') -eq $runId })
+
+                    if (-not $streakClosed) {
+                        if ($stage -eq 'Success') {
+                            $streakClosed = $true
+                        }
+                        elseif ($script:AnomalousStages -contains $stage) {
+                            $result.AnomalousStreak++
+                            $code = Get-TerminalCode -Record $record
+                            $streakCodes[$code] = 1 + $(if ($streakCodes.ContainsKey($code)) { $streakCodes[$code] } else { 0 })
+                        }
+                    }
                 }
                 if ($runId -and $stage -eq 'Success' -and $successRunIds.Add($runId) -and $null -eq $result.LastSuccess) {
                     $result.LastSuccess = $record
@@ -282,6 +333,10 @@ function Get-PipelineSnapshot {
             }
 
             if ($terminalRecords.Count -ge 2 -and $null -ne $result.LastSuccess) { break }
+        }
+
+        if ($streakCodes.Count -gt 0) {
+            $result.StreakDominantCode = ($streakCodes.GetEnumerator() | Sort-Object -Property Value -Descending | Select-Object -First 1).Key
         }
 
         if ($validRecordCount -eq 0) {
@@ -363,12 +418,38 @@ function Get-ExportSnapshot {
 }
 
 function Get-ExportStageSnapshot {
+    param([string]$Directory = $script:ExportStageDirectory)
+
     try {
-        $files = @(Get-ChildItem -LiteralPath $script:ExportStageDirectory -File -ErrorAction Stop | Sort-Object LastWriteTime -Descending)
-        return [pscustomobject]@{ Available = $true; Count = $files.Count; Files = $files; Error = $null }
+        $files = @(Get-ChildItem -LiteralPath $Directory -File -ErrorAction Stop | Sort-Object LastWriteTime -Descending)
+        $oldest = if ($files.Count -gt 0) { $files[-1] } else { $null }
+        $oldestAge = if ($null -ne $oldest) { ((Get-Date) - $oldest.LastWriteTime).TotalMinutes } else { $null }
+        $unexpected = @($files | Where-Object { $_.Name -notmatch $script:CycleFileNamePattern })
+        return [pscustomobject]@{
+            Available        = $true
+            Count            = $files.Count
+            Files            = $files
+            Oldest           = $oldest
+            OldestAgeMinutes = $oldestAge
+            # Measure-Object sobre pipeline VAZIO retorna $null no PowerShell 5.1
+            # (nao um objeto com Sum = 0); sob Set-StrictMode, ler .Sum de $null
+            # lanca "A propriedade 'Sum' nao foi encontrada neste objeto".
+            TotalBytes       = $(if ($files.Count -gt 0) { ($files | Measure-Object -Property Length -Sum).Sum } else { 0 })
+            UnexpectedNames  = @($unexpected | ForEach-Object { $_.Name })
+            Error            = $null
+        }
     }
     catch {
-        return [pscustomobject]@{ Available = $false; Count = 0; Files = @(); Error = $_.Exception.Message }
+        return [pscustomobject]@{
+            Available        = $false
+            Count            = 0
+            Files            = @()
+            Oldest           = $null
+            OldestAgeMinutes = $null
+            TotalBytes       = 0
+            UnexpectedNames  = @()
+            Error            = $_.Exception.Message
+        }
     }
 }
 
@@ -504,12 +585,240 @@ function Get-TerminalCode {
     return $stage
 }
 
+function Get-OutboxStatusCount {
+    param([object]$Outbox, [string]$Status)
+
+    if ($null -eq $Outbox -or $null -eq $Outbox.Counts) { return 0 }
+    if ($Outbox.Counts.ContainsKey($Status)) { return [int]$Outbox.Counts[$Status] }
+    return 0
+}
+
+<#
+Le a outbox local em SOMENTE LEITURA. O PowerShell 5.1 nao possui driver SQLite
+e o arquivo .db-wal costuma estar dias a frente do .db, entao ler o arquivo cru
+mostraria estado vencido - apenas o motor SQLite (.db + -wal + -shm) devolve o
+estado real. O script vai por stdin (nenhum escaping de linha de comando) e o
+caminho do banco por argv. Somente SELECT, nunca payload_json.
+#>
+function Get-OutboxSnapshot {
+    param(
+        [string]$NodeExePath = $script:NodeExePath,
+        [string]$DbPath = $script:OutboxDbPath
+    )
+
+    $result = [ordered]@{
+        Available  = $false
+        Counts     = @{}
+        OldestOpen = $null
+        LastDone   = $null
+        Error      = $null
+    }
+
+    $process = $null
+    try {
+        if (-not (Test-Path -LiteralPath $NodeExePath -PathType Leaf)) {
+            $result.Error = 'node.exe nao encontrado'
+            return [pscustomobject]$result
+        }
+        if (-not (Test-Path -LiteralPath $DbPath -PathType Leaf)) {
+            $result.Error = 'banco da outbox nao encontrado'
+            return [pscustomobject]$result
+        }
+
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $NodeExePath
+        $psi.Arguments = '- "' + $DbPath + '"'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+
+        $process = [System.Diagnostics.Process]::Start($psi)
+        $process.StandardInput.Write($script:OutboxQueryScript)
+        $process.StandardInput.Close()
+
+        # Leitura assincrona: ReadToEnd sincrono bloquearia antes do WaitForExit
+        # e anularia o timeout.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $null = $process.StandardError.ReadToEndAsync()
+
+        if (-not $process.WaitForExit($script:OutboxQueryTimeoutMs)) {
+            $process.Kill()
+            $result.Error = 'timeout na leitura da outbox'
+            return [pscustomobject]$result
+        }
+        if ($process.ExitCode -ne 0) {
+            $result.Error = 'leitura da outbox retornou codigo ' + $process.ExitCode
+            return [pscustomobject]$result
+        }
+
+        $stdout = $stdoutTask.Result
+        if ([string]::IsNullOrWhiteSpace($stdout)) {
+            $result.Error = 'leitura da outbox sem retorno'
+            return [pscustomobject]$result
+        }
+
+        $parsed = $stdout | ConvertFrom-Json -ErrorAction Stop
+        $counts = @{}
+        foreach ($row in @($parsed.byStatus)) {
+            if ($null -ne $row) { $counts[[string]$row.status] = [int]$row.n }
+        }
+        $result.Counts = $counts
+        $result.OldestOpen = $parsed.oldestOpen
+        $result.LastDone = $parsed.lastDone
+        $result.Available = $true
+    }
+    catch {
+        $result.Error = $_.Exception.Message
+    }
+    finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+
+    return [pscustomobject]$result
+}
+
+function Get-OutboxHealth {
+    param(
+        [object]$Outbox,
+        [int]$ConsecutiveFailures = 0,
+        [AllowNull()][object]$Now = $null
+    )
+
+    $reference = if ($null -ne $Now) { [datetime]$Now } else { Get-Date }
+
+    if ($null -eq $Outbox -or -not $Outbox.Available) {
+        $erro = if ($null -ne $Outbox) { Get-DisplayValue -Value $Outbox.Error -Fallback 'fonte indisponivel' } else { 'fonte indisponivel' }
+        # Falha isolada nao eleva o banner: so apos N leituras consecutivas.
+        $level = if ($ConsecutiveFailures -ge $script:OutboxUnavailableGraceReads) { 'ATENCAO' } else { 'NORMAL' }
+        return [pscustomobject]@{ Level = $level; Summary = 'Leitura indisponivel'; Detail = $erro }
+    }
+
+    $failed = Get-OutboxStatusCount -Outbox $Outbox -Status 'FAILED'
+    $retry = Get-OutboxStatusCount -Outbox $Outbox -Status 'RETRY'
+    $pending = Get-OutboxStatusCount -Outbox $Outbox -Status 'PENDING'
+    $sending = Get-OutboxStatusCount -Outbox $Outbox -Status 'SENDING'
+    $sent = Get-OutboxStatusCount -Outbox $Outbox -Status 'SENT'
+    $review = Get-OutboxStatusCount -Outbox $Outbox -Status 'REVIEW_STORED'
+    $abertos = $failed + $retry + $pending + $sending
+
+    $openAge = $null
+    if ($null -ne $Outbox.OldestOpen) {
+        try { $openAge = ($reference - ([datetimeoffset]$Outbox.OldestOpen.created_at).LocalDateTime).TotalMinutes }
+        catch { $openAge = $null }
+    }
+
+    $level = 'NORMAL'
+    if ($failed -gt 0) { $level = 'PROBLEMA' }
+    elseif ($null -ne $openAge -and $openAge -gt $script:OutboxOpenActionMinutes) { $level = 'PROBLEMA' }
+    elseif ($retry -gt 0) { $level = 'ATENCAO' }
+    elseif ($null -ne $openAge -and $openAge -ge $script:TransientGraceMinutes) { $level = 'ATENCAO' }
+
+    $detail = ''
+    if ($level -ne 'NORMAL' -and $null -ne $Outbox.OldestOpen) {
+        $aberto = $Outbox.OldestOpen
+        $erroTexto = Get-DisplayValue -Value $aberto.ultimo_erro -Fallback ''
+        if ($erroTexto.Length -gt $script:ErrorDetailMaxChars) {
+            $erroTexto = $erroTexto.Substring(0, $script:ErrorDetailMaxChars) + '...'
+        }
+        $partes = @(
+            (Get-DisplayValue -Value $aberto.event_id),
+            ('NEX ' + (Get-DisplayValue -Value $aberto.nex_transaction_id)),
+            (Get-DisplayValue -Value $aberto.status),
+            ('tentativas ' + (Get-DisplayValue -Value $aberto.tentativas))
+        )
+        if ($null -ne $openAge) { $partes += ('aberto ha {0:N0} min' -f [math]::Floor($openAge)) }
+        $detail = ($partes -join ' | ')
+        if ($erroTexto) { $detail += ' | ' + $erroTexto }
+    }
+
+    return [pscustomobject]@{
+        Level   = $level
+        Summary = ('{0} SENT | {1} REVIEW_STORED | {2} aberto{3}' -f $sent, $review, $abertos, $(if ($abertos -eq 1) { '' } else { 's' }))
+        Detail  = $detail
+    }
+}
+
+function Get-StageHealth {
+    param(
+        [object]$Stage,
+        [bool]$G13Blocked = $false
+    )
+
+    if ($null -eq $Stage -or -not $Stage.Available) {
+        $erro = if ($null -ne $Stage) { Get-DisplayValue -Value $Stage.Error -Fallback 'leitura indisponivel' } else { 'leitura indisponivel' }
+        return [pscustomobject]@{ Level = 'ATENCAO'; Summary = 'Leitura indisponivel'; Detail = $erro }
+    }
+
+    if ($Stage.Count -eq 0) {
+        return [pscustomobject]@{ Level = 'NORMAL'; Summary = 'vazio'; Detail = '' }
+    }
+
+    $idade = $Stage.OldestAgeMinutes
+    $nome = if ($null -ne $Stage.Oldest) { $Stage.Oldest.Name } else { '-' }
+    $detalhe = '{0} | {1} | {2}' -f $nome, (Format-FileAge -Time $(if ($null -ne $Stage.Oldest) { $Stage.Oldest.LastWriteTime } else { $null })), (Format-FileSize -Bytes $Stage.TotalBytes)
+
+    $level = 'ATENCAO'
+    if ($G13Blocked) { $level = 'PROBLEMA' }
+    elseif ($Stage.Count -gt 1) { $level = 'PROBLEMA' }
+    elseif (@($Stage.UnexpectedNames).Count -gt 0) { $level = 'PROBLEMA' }
+    elseif ($null -ne $idade -and $idade -gt $script:StageActionMinutes) { $level = 'PROBLEMA' }
+    elseif ($null -ne $idade -and $idade -lt $script:TransientGraceMinutes) { $level = 'NORMAL' }
+
+    $resumo = '{0} arquivo{1}' -f $Stage.Count, $(if ($Stage.Count -eq 1) { '' } else { 's' })
+    if ($level -eq 'NORMAL') { $resumo += ' (ciclo em andamento)' }
+
+    return [pscustomobject]@{
+        Level   = $level
+        Summary = $resumo
+        Detail  = $(if ($level -eq 'NORMAL') { '' } else { $detalhe })
+    }
+}
+
+function Get-SuccessHealth {
+    param(
+        [object]$Pipeline,
+        [object]$Nex
+    )
+
+    $streak = if ($null -ne $Pipeline) { [int]$Pipeline.AnomalousStreak } else { 0 }
+    $posicao = if ($null -ne $Nex) { Get-DisplayValue -Value $Nex.Position -Fallback 'UNKNOWN' } else { 'UNKNOWN' }
+
+    if ($posicao -eq 'CLOSED' -or $posicao -eq 'MINIMIZED') {
+        return [pscustomobject]@{ Level = 'NORMAL'; Summary = 'suspenso - NEX indisponivel'; Detail = '' }
+    }
+
+    $idade = '-'
+    if ($null -ne $Pipeline -and $null -ne $Pipeline.LastSuccess) {
+        try { $idade = Format-FileAge -Time ([datetimeoffset]$Pipeline.LastSuccess.timestamp).LocalDateTime } catch { $idade = '-' }
+    }
+
+    $level = 'NORMAL'
+    if ($streak -ge $script:SuccessActionCycles) { $level = 'PROBLEMA' }
+    elseif ($streak -ge $script:SuccessAttentionCycles) { $level = 'ATENCAO' }
+
+    $resumo = if ($streak -gt 0) {
+        '{0} | {1} ciclo{2} sem exportar' -f $idade, $streak, $(if ($streak -eq 1) { '' } else { 's' })
+    } else { $idade }
+
+    $detalhe = ''
+    if ($level -ne 'NORMAL') {
+        $detalhe = 'streak {0} | motivo dominante: {1}' -f $streak, (Get-DisplayValue -Value $Pipeline.StreakDominantCode -Fallback 'desconhecido')
+    }
+
+    return [pscustomobject]@{ Level = $level; Summary = $resumo; Detail = $detalhe }
+}
+
 function Get-OverallStatus {
     param(
         [object]$Task,
         [object]$Pipeline,
         [object]$Export,
-        [object]$Nex
+        [object]$Nex,
+        [AllowNull()][object]$OutboxHealth = $null,
+        [AllowNull()][object]$StageHealth = $null,
+        [AllowNull()][object]$SuccessHealth = $null
     )
 
     $level = 'NORMAL'
@@ -586,6 +895,26 @@ function Get-OverallStatus {
 
     if ($Pipeline.InProgress) {
         $details.Add('Execucao em andamento')
+    }
+
+    # Saude operacional: PROBLEMA sempre eleva; ATENCAO eleva apenas a partir de
+    # NORMAL. Os estados 'amarelos' ja possuem piso de tempo proprio, entao um
+    # transitorio de poucos segundos nunca chega aqui.
+    foreach ($health in @(
+        @{ Nome = 'PRIME COBRANCAS'; Valor = $OutboxHealth },
+        @{ Nome = 'EXPORT_STAGE'; Valor = $StageHealth },
+        @{ Nome = 'ULTIMO SUCCESS'; Valor = $SuccessHealth }
+    )) {
+        $atual = $health.Valor
+        if ($null -eq $atual) { continue }
+        if ($atual.Level -eq 'PROBLEMA') {
+            $level = 'PROBLEMA'
+            $details.Add($health.Nome + ': ' + $atual.Summary)
+        }
+        elseif ($atual.Level -eq 'ATENCAO') {
+            if ($level -eq 'NORMAL') { $level = 'ATENCAO' }
+            $details.Add($health.Nome + ': ' + $atual.Summary)
+        }
     }
 
     if ($details.Count -eq 0) { $details.Add('Leituras coerentes e ultimo pipeline concluido com sucesso') }
