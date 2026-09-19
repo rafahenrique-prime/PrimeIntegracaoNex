@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Xunit;
 
@@ -8,7 +9,7 @@ public sealed class MonitorJsonCompatibilityTests
     [Fact]
     public void PipelineParser_UsaSomenteCamposLegadosNomeadosEConverteJsonComTelemetriaAdicional()
     {
-        var monitorSource = File.ReadAllText(FindMonitorSource());
+        var monitorSource = ReadMonitorSource();
 
         Assert.Contains("ConvertFrom-Json -ErrorAction Stop", monitorSource);
         Assert.Contains("$record.runId", monitorSource);
@@ -50,7 +51,7 @@ public sealed class MonitorJsonCompatibilityTests
     [Fact]
     public void V2_G13_ExigeStagingMaisSafeStateSemExportTriggered()
     {
-        var monitorSource = File.ReadAllText(FindMonitorSource());
+        var monitorSource = ReadMonitorSource();
 
         Assert.Contains("$Stage.Count -eq 0", monitorSource);
         Assert.Contains("SafeStateValidated", monitorSource);
@@ -63,7 +64,7 @@ public sealed class MonitorJsonCompatibilityTests
     [Fact]
     public void V2_ExplicitaProjecoesReadOnlyDeCicloExecucaoERefresh()
     {
-        var monitorSource = File.ReadAllText(FindMonitorSource());
+        var monitorSource = ReadMonitorSource();
 
         Assert.Contains("LatestCycle", monitorSource);
         Assert.Contains("CurrentRun", monitorSource);
@@ -77,7 +78,7 @@ public sealed class MonitorJsonCompatibilityTests
     [Fact]
     public void V2_RenderizacaoProtegeRouteEventNuloEAceitaDuracoesDeterministicas()
     {
-        var monitorSource = File.ReadAllText(FindMonitorSource());
+        var monitorSource = ReadMonitorSource();
 
         Assert.Contains("$cycleRouteEvent = $cycle.RouteEvent", monitorSource);
         Assert.Contains("$currentRouteEvent = $currentRun.RouteEvent", monitorSource);
@@ -110,7 +111,7 @@ public sealed class MonitorJsonCompatibilityTests
     [Fact]
     public void V2_LayoutDuasColunasMantemProjecoesReadOnlyEHistoricoDeSucesso()
     {
-        var monitorSource = File.ReadAllText(FindMonitorSource());
+        var monitorSource = ReadMonitorSource();
 
         Assert.Contains("[System.Drawing.Size]::new(1120, 720)", monitorSource);
         Assert.Contains("$content = [System.Windows.Forms.TableLayoutPanel]::new()", monitorSource);
@@ -181,14 +182,34 @@ public sealed class MonitorJsonCompatibilityTests
         return count;
     }
 
-    private static string FindMonitorSource()
+    /// <summary>O Monitor foi dividido em Core (funcoes de leitura, dot-source)
+    /// e UI (bootstrap WinForms). As assercoes deste arquivo valem para o
+    /// conjunto, entao o texto dos dois e concatenado.
+    ///
+    /// A busca parte do caminho deste proprio arquivo-fonte, nao de
+    /// AppContext.BaseDirectory: com --artifacts-path o binario de teste roda
+    /// fora da arvore do repositorio e a busca por diretorio-pai nunca
+    /// encontraria WINDOWS\PrimeNexMonitor.</summary>
+    private static string ReadMonitorSource([CallerFilePath] string testSourcePath = "")
     {
-        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        var origins = new[] { Path.GetDirectoryName(testSourcePath), AppContext.BaseDirectory };
+
+        foreach (var origin in origins)
         {
-            var candidate = Path.Combine(directory.FullName, "WINDOWS", "PrimeNexMonitor", "PrimeNexMonitor.ps1");
-            if (File.Exists(candidate)) return candidate;
+            if (string.IsNullOrEmpty(origin)) continue;
+
+            for (var directory = new DirectoryInfo(origin); directory is not null; directory = directory.Parent)
+            {
+                var monitorDirectory = Path.Combine(directory.FullName, "WINDOWS", "PrimeNexMonitor");
+                var ui = Path.Combine(monitorDirectory, "PrimeNexMonitor.ps1");
+                var core = Path.Combine(monitorDirectory, "PrimeNexMonitor.Core.ps1");
+                if (File.Exists(ui) && File.Exists(core))
+                {
+                    return File.ReadAllText(core) + "\n" + File.ReadAllText(ui);
+                }
+            }
         }
 
-        throw new FileNotFoundException("PrimeNexMonitor.ps1 nao encontrado a partir do diretorio de testes.");
+        throw new FileNotFoundException("PrimeNexMonitor.Core.ps1/PrimeNexMonitor.ps1 nao encontrados a partir do diretorio de testes.");
     }
 }
