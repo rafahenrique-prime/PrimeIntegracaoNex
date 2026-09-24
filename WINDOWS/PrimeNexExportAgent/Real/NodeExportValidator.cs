@@ -22,9 +22,9 @@ public sealed class NodeExportValidator : IExportValidator
 {
     /// <summary>Timeout conservador para um Reader local processando um
     /// .xls de ~1,7MB (tempo real observado em F6.14B2.9: escrita do
-    /// proprio arquivo pelo NEX levou ~7s: 15s cobre o Reader com folga
+    /// proprio arquivo pelo NEX levou ~7s: 20s cobre o Reader com folga
     /// generosa sem esperar indefinidamente).</summary>
-    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
+    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(20);
 
     private const int ExitOk = 0;
     private const int ExitReaderRejeitou = 1;

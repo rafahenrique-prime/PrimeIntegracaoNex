@@ -234,4 +234,56 @@ public sealed class NodeExportValidatorTests
         Assert.False(result!.Valid);
         Assert.Equal(AgentErrorCode.UnexpectedException, result.ErrorCode);
     }
+
+    [Fact]
+    public void A18_TimeoutPadraoDoValidator_EhVinteSegundos()
+    {
+        var (runner, validator) = BuildFixture();
+
+        validator.Validate(XlsPath);
+
+        Assert.Equal(TimeSpan.FromSeconds(20), NodeExportValidator.DefaultTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(20), runner.LastTimeout);
+    }
+
+    [Fact]
+    public void A19_SucessoAntesDoTimeout_PassComTimeoutDeVinteSegundos()
+    {
+        var (runner, validator) = BuildFixture();
+        runner.Result = new ProcessRunResult(started: true, timedOut: false, exitCode: 0, stdOut: "{\"ok\":true,\"rows\":4918}\n", stdErr: string.Empty);
+
+        var result = validator.Validate(XlsPath);
+
+        Assert.True(result.Valid);
+        Assert.Equal(4918, result.RecordCount);
+        Assert.Equal(TimeSpan.FromSeconds(20), runner.LastTimeout);
+        Assert.Equal(1, runner.RunCalls);
+    }
+
+    [Fact]
+    public void A20_TimeoutDeVinteSegundos_ContinuaFailClosed()
+    {
+        var (runner, validator) = BuildFixture();
+        runner.Result = new ProcessRunResult(started: true, timedOut: true, exitCode: null, stdOut: string.Empty, stdErr: string.Empty);
+
+        var result = validator.Validate(XlsPath);
+
+        Assert.False(result.Valid);
+        Assert.Equal(AgentErrorCode.UnexpectedException, result.ErrorCode);
+        Assert.Contains("timeout de 20s", result.Reason);
+        Assert.Equal(TimeSpan.FromSeconds(20), runner.LastTimeout);
+    }
+
+    [Fact]
+    public void A21_TimeoutDeVinteSegundos_NaoFazRetryAutomatico()
+    {
+        var (runner, validator) = BuildFixture();
+        runner.Result = new ProcessRunResult(started: true, timedOut: true, exitCode: null, stdOut: string.Empty, stdErr: string.Empty);
+
+        var result = validator.Validate(XlsPath);
+
+        Assert.False(result.Valid);
+        Assert.Equal(1, runner.RunCalls);
+        Assert.Contains("nenhuma segunda tentativa", result.Reason);
+    }
 }
