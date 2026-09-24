@@ -27,6 +27,7 @@ LOGS/
 OUTPUT/
 PROCESSADOS/
 /RECOVERY/
+/EXPORT_STAGE/
 
 # Logs do npm/yarn
 npm-debug.log*
