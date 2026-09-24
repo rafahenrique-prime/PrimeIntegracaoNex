@@ -37,6 +37,8 @@ internal static class RunOnceScheduledHybridEntrypoint
     internal const string ProductionMutexName = RunOnceOperationalEntrypoint.ProductionMutexName;
     internal const string ExportStagePath = RunOnceOperationalEntrypoint.ExportStagePath;
     internal const string ExportadosPath = RunOnceOperationalEntrypoint.ExportadosPath;
+    internal const string RecoveryExportStagePath = @"C:\Nex\PrimeIntegracaoNex\RECOVERY\EXPORT_STAGE";
+    internal const string LogsPath = @"C:\Nex\PrimeIntegracaoNex\LOGS";
     private const string ExpectedFileType = "Excel";
 
     /// <summary>Comparacao EXATA - nunca StartsWith/Contains/prefix
@@ -141,7 +143,9 @@ internal static class RunOnceScheduledHybridEntrypoint
         NexRuntimeState.Closed => 0,
         NexRuntimeState.Minimized => 0,
         NexRuntimeState.BlockingUnknown => 0,
-        NexRuntimeState.Open => RunOnceScheduledSafeEntrypoint.MapExitCode(result.AgentResult!),
+        NexRuntimeState.Open => result.AgentResult!.FinalStage == AgentStage.RecoveryCompleted
+            ? 0
+            : RunOnceScheduledSafeEntrypoint.MapExitCode(result.AgentResult),
         _ => 1,
     };
 
@@ -191,8 +195,23 @@ internal static class RunOnceScheduledHybridEntrypoint
 
         var fileMover = new Win32FileMover();
         var atomicPublisher = new FileMoveAtomicPublisher(fileMover, ExportStagePath, ExportadosPath);
+        var csvQuarantinePublisher = new FileMoveAtomicQuarantinePublisher(fileMover, ExportStagePath, RecoveryExportStagePath);
 
         var logger = new ConsoleAgentLogger();
+        var intentStore = new DurableExportIntentStore(Path.Combine(LogsPath, "g13-export-intents.jsonl"));
+        var recoveryLedger = new RecoveryLedger(Path.Combine(LogsPath, "g13-auto-recovery-ledger.jsonl"));
+        var autoRecovery = new FileSystemAutoRecoveryService(
+            ExportStagePath,
+            ExportadosPath,
+            RecoveryExportStagePath,
+            exportStageWatcher,
+            exportValidator,
+            atomicPublisher,
+            csvQuarantinePublisher,
+            intentStore,
+            recoveryLedger,
+            logger,
+            clock);
 
         return new ExportAgentOrchestrator(
             executionLock,
@@ -210,7 +229,9 @@ internal static class RunOnceScheduledHybridEntrypoint
             clock,
             ExportStagePath,
             ExportadosPath,
-            ExpectedFileType);
+            ExpectedFileType,
+            autoRecovery: autoRecovery,
+            exportIntentStore: intentStore);
     }
 
     /// <summary>

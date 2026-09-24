@@ -490,7 +490,9 @@ public sealed class ExportAgentOrchestratorTests
             "Start", "LockAcquired", "SessionValidated", "NexValidated", "SafeStateValidated",
             "ExportTriggered", "SaveDialogIdentified", "SaveControlsValidated", "SaveDialogConfigured",
             "SaveDialogReadbackValidated", "FileSaveTriggered", "FileStable", "ReaderValidated",
-            "Published", "Success",
+            "Published", "Success", "RecoveryCompleted", "AutoRecoveryDetected",
+            "AutoRecoveryEligible", "AutoRecoveryRejected", "AutoRecoveryXlsPublished",
+            "AutoRecoveryCsvQuarantined", "AutoRecoveryFailed",
             // V1 (extrato individual por cliente) - estagios NOVOS do fluxo
             // de IndividualStatementExportOrchestrator, inseridos no MESMO
             // enum compartilhado (AgentStage) por decisao de design (ver

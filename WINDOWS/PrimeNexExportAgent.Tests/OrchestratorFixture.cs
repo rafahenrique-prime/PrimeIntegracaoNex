@@ -1,3 +1,4 @@
+using PrimeNexExportAgent.Contracts;
 using PrimeNexExportAgent.Domain;
 using PrimeNexExportAgent.Tests.Fakes;
 
@@ -44,7 +45,7 @@ public sealed class OrchestratorFixture
         AtomicPublisher = new FakeAtomicPublisher(Spy);
     }
 
-    public ExportAgentOrchestrator BuildOrchestrator() => new(
+    public ExportAgentOrchestrator BuildOrchestrator(IAutoRecoveryService? autoRecovery = null, IExportIntentStore? exportIntentStore = null) => new(
         Lock,
         SessionInspector,
         NexWindowInspector,
@@ -59,5 +60,7 @@ public sealed class OrchestratorFixture
         Logger,
         Clock,
         ExportStagePath,
-        ExportadosPath);
+        ExportadosPath,
+        autoRecovery: autoRecovery,
+        exportIntentStore: exportIntentStore);
 }

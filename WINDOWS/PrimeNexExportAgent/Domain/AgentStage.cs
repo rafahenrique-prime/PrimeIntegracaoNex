@@ -24,6 +24,13 @@ public enum AgentStage
     ReaderValidated,
     Published,
     Success,
+    RecoveryCompleted,
+    AutoRecoveryDetected,
+    AutoRecoveryEligible,
+    AutoRecoveryRejected,
+    AutoRecoveryXlsPublished,
+    AutoRecoveryCsvQuarantined,
+    AutoRecoveryFailed,
 
     // Estagios NOVOS do fluxo de extrato individual por cliente (V1) -
     // inseridos entre SafeStateValidated e ExportTriggered, nunca

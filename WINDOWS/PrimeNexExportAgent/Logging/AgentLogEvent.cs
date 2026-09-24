@@ -26,6 +26,7 @@ public sealed class AgentLogEvent
     public string? HybridRoute { get; }
     public string? NexPosition { get; }
     public string? RouteReason { get; }
+    public Guid? CorrelationId { get; }
 
     public AgentLogEvent(
         DateTime timestamp,
@@ -36,7 +37,8 @@ public sealed class AgentLogEvent
         string? reason = null,
         string? hybridRoute = null,
         string? nexPosition = null,
-        string? routeReason = null)
+        string? routeReason = null,
+        Guid? correlationId = null)
     {
         Timestamp = timestamp;
         RunId = runId;
@@ -47,6 +49,7 @@ public sealed class AgentLogEvent
         HybridRoute = hybridRoute;
         NexPosition = nexPosition;
         RouteReason = routeReason;
+        CorrelationId = correlationId;
     }
 }
 

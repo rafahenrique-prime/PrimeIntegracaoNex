@@ -226,6 +226,15 @@ public sealed class RunOnceScheduledHybridEntrypointTests
     }
 
     [Fact]
+    public void G2b_MapExitCode_OpenRecoveryCompleted_ZeroExitCode()
+    {
+        var agentResult = AgentRunResult.Recovered(Guid.NewGuid(), @"C:\temp\recovered.xls");
+        var result = new HybridRunResult(Guid.NewGuid(), NexRuntimeState.Open, agentResult, "aberto");
+
+        Assert.Equal(0, RunOnceScheduledHybridEntrypoint.MapExitCode(result));
+    }
+
+    [Fact]
     public void G3_MapExitCode_OpenFailed_ExitCodeUm()
     {
         var agentResult = AgentRunResult.Stop(Guid.NewGuid(), AgentStage.Failed, AgentErrorCode.UnexpectedException);

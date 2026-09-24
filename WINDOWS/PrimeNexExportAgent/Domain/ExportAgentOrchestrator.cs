@@ -33,6 +33,8 @@ public sealed class ExportAgentOrchestrator
     private readonly IAtomicPublisher _atomicPublisher;
     private readonly IAgentLogger _logger;
     private readonly IClock _clock;
+    private readonly IAutoRecoveryService? _autoRecovery;
+    private readonly IExportIntentStore? _exportIntentStore;
 
     private readonly string _exportStagePath;
     private readonly string _exportadosPath;
@@ -56,7 +58,9 @@ public sealed class ExportAgentOrchestrator
         string exportStagePath,
         string exportadosPath,
         string expectedFileType = "Excel",
-        TimeSpan? watcherTimeout = null)
+        TimeSpan? watcherTimeout = null,
+        IAutoRecoveryService? autoRecovery = null,
+        IExportIntentStore? exportIntentStore = null)
     {
         _lock = @lock;
         _sessionInspector = sessionInspector;
@@ -75,11 +79,14 @@ public sealed class ExportAgentOrchestrator
         _exportadosPath = exportadosPath;
         _expectedFileType = expectedFileType;
         _watcherTimeout = watcherTimeout ?? TimeSpan.FromSeconds(30);
+        _autoRecovery = autoRecovery;
+        _exportIntentStore = exportIntentStore;
     }
 
     public AgentRunResult Run()
     {
         var runId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
 
         try
         {
@@ -110,6 +117,25 @@ public sealed class ExportAgentOrchestrator
                     return AgentRunResult.Stop(runId, AgentStage.SkippedSessionUnavailable, session.ErrorCode);
                 }
                 Log(runId, AgentStage.SessionValidated);
+
+                // G13 Auto-Recovery e' composto SOMENTE pelo Scheduled
+                // Hybrid. Executa sob o mutex ja adquirido e depois da
+                // sessao do Agent validada; nunca toca NEX/UI. Qualquer
+                // stage nao vazio que nao seja recuperavel encerra aqui em
+                // fail-closed, antes de LocateNexAdmin/automation.
+                if (_autoRecovery is not null)
+                {
+                    var recovery = _autoRecovery.TryRecover(runId, correlationId);
+                    if (recovery.Succeeded)
+                    {
+                        Log(runId, AgentStage.RecoveryCompleted, fileName: Path.GetFileName(recovery.DestinationPath), reason: recovery.Outcome.ToString(), correlationId: correlationId);
+                        return AgentRunResult.Recovered(runId, recovery.DestinationPath!);
+                    }
+                    if (recovery.ShouldStopRun)
+                    {
+                        return AgentRunResult.Stop(runId, AgentStage.Failed, recovery.ErrorCode);
+                    }
+                }
 
                 // ---- G1: identidade do NexAdmin + comparacao de sessao
                 // (F6.13.2 correcao - agora inteiramente em INexWindowInspector) ----
@@ -238,6 +264,26 @@ public sealed class ExportAgentOrchestrator
                 }
                 Log(runId, AgentStage.SaveDialogReadbackValidated, fileName: fileName);
 
+                // Prova duravel obrigatoria do export esperado. O registro
+                // e flushado ANTES do unico CommitOnce; stdout/JSONL do
+                // Launcher permanece apenas evidencia complementar.
+                DurableExportIntent? durableIntent = null;
+                if (_exportIntentStore is not null)
+                {
+                    durableIntent = new DurableExportIntent(
+                        runId,
+                        correlationId,
+                        Path.GetFileNameWithoutExtension(fileName),
+                        ".xls",
+                        _clock.Now.ToUniversalTime(),
+                        "ExpectedExport");
+                    if (!_exportIntentStore.RecordExpected(durableIntent, out var intentReason))
+                    {
+                        Log(runId, AgentStage.Failed, AgentErrorCode.DurableIntentUnavailable, fileName: fileName, reason: intentReason, correlationId: correlationId);
+                        return AgentRunResult.Stop(runId, AgentStage.Failed, AgentErrorCode.DurableIntentUnavailable);
+                    }
+                }
+
                 // ==================================================
                 // A PARTIR DAQUI: G8-G12 = PASS confirmado. Autorizado
                 // exatamente 1 CommitOnce() (F6.14B2.12C1) - NUNCA
@@ -294,6 +340,12 @@ public sealed class ExportAgentOrchestrator
                     return AgentRunResult.Stop(runId, AgentStage.Failed, publish.ErrorCode);
                 }
                 Log(runId, AgentStage.Published, fileName: fileName);
+                if (durableIntent is not null && !_exportIntentStore!.Resolve(durableIntent, out var resolveReason))
+                {
+                    // O XLS ja foi publicado e nunca pode ser desfeito ou
+                    // republicado. Registra a anomalia sem reexecutar acao.
+                    Log(runId, AgentStage.AutoRecoveryFailed, AgentErrorCode.DurableIntentUnavailable, fileName: fileName, reason: resolveReason, correlationId: correlationId);
+                }
                 Log(runId, AgentStage.Success, fileName: fileName);
 
                 return AgentRunResult.Ok(runId, publish.DestinationPath!);
@@ -316,7 +368,7 @@ public sealed class ExportAgentOrchestrator
         }
     }
 
-    private void Log(Guid runId, AgentStage stage, AgentErrorCode? errorCode = null, string? fileName = null, string? reason = null)
+    private void Log(Guid runId, AgentStage stage, AgentErrorCode? errorCode = null, string? fileName = null, string? reason = null, Guid? correlationId = null)
     {
         var errorCodeText = errorCode is null or AgentErrorCode.None ? null : errorCode.ToString();
         var routeContext = (_inputSender as IHybridRouteDecisionContext)?.CurrentDecision;
@@ -329,7 +381,8 @@ public sealed class ExportAgentOrchestrator
             reason,
             routeContext?.HybridRoute,
             routeContext?.NexPosition,
-            routeContext?.RouteReason));
+            routeContext?.RouteReason,
+            correlationId));
     }
 
     /// <summary>Variante segura de Log() para uso EXCLUSIVO dentro de blocos

@@ -32,5 +32,6 @@ public sealed class ConsoleAgentLogger : IAgentLogger
             hybridRoute = evt.HybridRoute,
             nexPosition = evt.NexPosition,
             routeReason = evt.RouteReason,
+            correlationId = evt.CorrelationId,
         });
 }

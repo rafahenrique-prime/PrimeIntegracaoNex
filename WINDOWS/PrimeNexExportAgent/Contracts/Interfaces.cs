@@ -201,6 +201,38 @@ public interface IAgentLogger
     void Log(AgentLogEvent evt);
 }
 
+/// <summary>Intent persistente da exportacao esperada. A implementacao deve
+/// garantir flush duravel antes de qualquer acao de Save.</summary>
+public interface IExportIntentStore
+{
+    bool RecordExpected(DurableExportIntent intent, out string reason);
+    bool Resolve(DurableExportIntent intent, out string reason);
+    DurableIntentLookup FindPending(string expectedBasename);
+}
+
+/// <summary>Ledger append-only da recuperacao G13. Qualquer estado invalido
+/// deve ser tratado como corrompido e bloquear a operacao.</summary>
+public interface IRecoveryLedger
+{
+    bool IsHealthy(out string reason);
+    bool HasPublishedXlsHash(string sha256, out string reason);
+    bool HasCsvRecoveryIncident(Guid runId, Guid correlationId, string fileName, string sha256, out string reason);
+    bool AppendIntentPending(Guid runId, Guid correlationId, string fileName, string classification, string sha256, string sourcePath, string destinationPath, out string reason);
+    bool AppendCompleted(Guid runId, Guid correlationId, string fileName, string classification, string sha256, string sourcePath, string destinationPath, out string reason);
+    bool AppendFailed(Guid runId, Guid correlationId, string fileName, string classification, string sha256, string sourcePath, string destinationPath, string failureReason, out string reason);
+    bool TryAppendMoveUnknown(Guid runId, Guid correlationId, string fileName, string classification, string sha256, string sourcePath, string destinationPath, string failureReason);
+}
+
+public interface IAtomicQuarantinePublisher
+{
+    PublishResult Publish(string sourcePath, string destinationDirectory);
+}
+
+public interface IAutoRecoveryService
+{
+    AutoRecoveryResult TryRecover(Guid runId, Guid correlationId);
+}
+
 // ------------------------------ ACAO ------------------------------
 
 /// <summary>UNICA responsabilidade: enviar o atalho Shift+F5 para a janela

@@ -54,4 +54,9 @@ public enum AgentErrorCode
 
     // Modo scheduled-safe (--run-once-scheduled-safe).
     NotForeground,
+
+    AutoRecoveryRejected,
+    DurableIntentUnavailable,
+    RecoveryLedgerCorrupt,
+    RecoveryMoveUnknown,
 }
