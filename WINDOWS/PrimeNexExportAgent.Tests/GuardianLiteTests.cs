@@ -1,4 +1,6 @@
 using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using PrimeNexExportAgent.Diagnostics;
@@ -118,9 +120,208 @@ public sealed class GuardianLiteTests : IDisposable
         finally { Environment.SetEnvironmentVariable("DEEPSEEK_API_KEY", old); }
 
         var source = File.ReadAllText(FindRepoFile(new[] { "WINDOWS", "PrimeNexExportAgent", "Diagnostics", "GuardianLite.cs" }));
-        Assert.DoesNotContain("GetEnvironmentVariable", source);
-        Assert.DoesNotContain("HttpClient", source);
-        Assert.DoesNotContain("api.deepseek.com", source, StringComparison.OrdinalIgnoreCase);
+        var dryRunStart = source.IndexOf("public static void RunDryRun", StringComparison.Ordinal);
+        var executeStart = source.IndexOf("internal static GuardianDryRunResult ExecuteDryRun", StringComparison.Ordinal);
+        var dryRunSource = source.Substring(dryRunStart, executeStart - dryRunStart);
+        Assert.DoesNotContain("GetEnvironmentVariable", dryRunSource);
+        Assert.DoesNotContain("HttpClient", dryRunSource);
+    }
+
+    [Fact]
+    public void PromptExigeJsonEstritoComContratoCompleto()
+    {
+        var prompt = GuardianLite.BuildPrompt("{}");
+
+        Assert.Contains("exactly ONE RFC 8259 JSON object", prompt);
+        Assert.Contains("no Markdown, ```json, code fences, comments, or text before or after it", prompt);
+        Assert.Contains("Use double quotes for property names and strings; no trailing commas.", prompt);
+        Assert.Contains("\"classification\": \"AMBIGUOUS\"", prompt);
+        Assert.Contains("\"confidence\": 50", prompt);
+        Assert.Contains("\"summary\": \"Short text.\"", prompt);
+        Assert.Contains("\"evidence\": [\"Technical evidence 1\", \"Technical evidence 2\"]", prompt);
+        Assert.Contains("\"recommended_action\": \"Recommended action for a human only.\"", prompt);
+        Assert.Contains("\"safe_to_auto_fix\": false", prompt);
+        Assert.Contains("\"needs_human\": true", prompt);
+        Assert.Contains("Do not add fields or omit fields.", prompt);
+        Assert.Contains("confidence must be an integer 0-100", prompt);
+        Assert.Contains("evidence must be a JSON array of strings", prompt);
+        Assert.Contains("safe_to_auto_fix must be boolean false", prompt);
+        Assert.Contains("needs_human must be boolean", prompt);
+        Assert.Contains("UI_FOREGROUND", prompt);
+        Assert.Contains("UNKNOWN", prompt);
+    }
+
+    [Fact]
+    public void Analyze_RegraDeterministicaNaoFazHttpNemLeChave()
+    {
+        var handler = new CountingHandler(_ => throw new InvalidOperationException("HTTP nao deveria ser chamado"));
+        var result = GuardianLite.ExecuteAnalyze(Logs, Stage, Temp, Now,
+            new GuardianNexState("CLOSED", "UNKNOWN"), "UNKNOWN", null,
+            () => new HttpClient(handler));
+
+        Assert.Equal("RULE", result.DiagnosticSource);
+        Assert.False(result.AiCalled);
+        Assert.Equal(0, result.AiCallCount);
+        Assert.Equal(0, handler.Calls);
+        Assert.Equal("NEX_CLOSED", result.Diagnostic!.Classification);
+        Assert.False(result.Diagnostic.SafeToAutoFix);
+    }
+
+    [Fact]
+    public void Analyze_AmbiguoFazExatamenteUmaChamadaEValidaJson()
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => JsonResponse("UI_UNSAFE_STATE", 92, "Instabilidade de estado/UI do NEX."));
+        var result = AnalyzeWith(handler);
+
+        Assert.Equal("AI", result.DiagnosticSource);
+        Assert.True(result.AiCalled);
+        Assert.Equal(1, result.AiCallCount);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(HttpStatusCode.OK, handler.StatusCode);
+        Assert.Contains("\"max_tokens\":1000", handler.RequestBody);
+        Assert.Contains("\"response_format\":{\"type\":\"json_object\"}", handler.RequestBody);
+        Assert.Contains("\"thinking\":{\"type\":\"disabled\"}", handler.RequestBody);
+        Assert.Equal("stop", result.FinishReason);
+        Assert.Equal("UI_UNSAFE_STATE", result.Diagnostic!.Classification);
+        Assert.Equal(92, result.Diagnostic.Confidence);
+        Assert.Equal(12, result.InputTokens);
+        Assert.Equal(8, result.OutputTokens);
+    }
+
+    [Fact]
+    public void Analyze_ChaveAusenteFalhaControladoSemHttp()
+    {
+        WriteAmbiguousLogs();
+        var old = Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY");
+        Environment.SetEnvironmentVariable("DEEPSEEK_API_KEY", null);
+        try
+        {
+            var handler = new CountingHandler(_ => throw new InvalidOperationException());
+            var result = GuardianLite.ExecuteAnalyze(Logs, Stage, Temp, Now,
+                new GuardianNexState("OPEN", "BACKGROUND"), "UNKNOWN", null,
+                () => new HttpClient(handler));
+            Assert.Equal("DEEPSEEK_CONFIG_MISSING", result.ErrorCode);
+            Assert.False(result.AiCalled);
+            Assert.Equal(0, handler.Calls);
+        }
+        finally { Environment.SetEnvironmentVariable("DEEPSEEK_API_KEY", old); }
+    }
+
+    [Fact]
+    public void Analyze_NuncaPersisteAuthorizationNemRecommendedActionExecutada()
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => ResponseWithRawField());
+        var result = AnalyzeWith(handler, "secret-value-that-must-not-appear");
+        var analysis = File.ReadAllText(result.AnalysisPath);
+        var usage = File.ReadAllText(result.UsagePath);
+
+        Assert.DoesNotContain("secret-value-that-must-not-appear", analysis);
+        Assert.DoesNotContain("secret-value-that-must-not-appear", usage);
+        Assert.DoesNotContain("Authorization", analysis, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Authorization", usage, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("RAW_RESPONSE_SENTINEL", analysis);
+        Assert.DoesNotContain("RAW_RESPONSE_SENTINEL", usage);
+        Assert.False(File.Exists(Path.Combine(Temp, "SHOULD_NOT_RUN")));
+    }
+
+    [Theory]
+    [InlineData("not-json", "INVALID_RESPONSE_JSON")]
+    [InlineData("{\"choices\":[],\"usage\":{}}", "EMPTY_RESPONSE")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"```json\\n{}\"}}]}", "INVALID_DIAGNOSTIC_JSON")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"{}\"}}]}", "TRUNCATED_RESPONSE")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"content_filter\",\"message\":{\"content\":\"{}\"}}]}", "UNEXPECTED_FINISH_REASON")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{\\\"classification\\\":\\\"NOT_ALLOWED\\\",\\\"confidence\\\":50,\\\"summary\\\":\\\"x\\\",\\\"evidence\\\":[],\\\"recommended_action\\\":\\\"x\\\",\\\"safe_to_auto_fix\\\":true,\\\"needs_human\\\":true}\"}}]}", "INVALID_DIAGNOSTIC_SCHEMA")]
+    [InlineData("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{\\\"classification\\\":\\\"UNKNOWN\\\",\\\"confidence\\\":101,\\\"summary\\\":\\\"x\\\",\\\"evidence\\\":[],\\\"recommended_action\\\":\\\"x\\\",\\\"safe_to_auto_fix\\\":false,\\\"needs_human\\\":true}\"}}]}", "INVALID_DIAGNOSTIC_SCHEMA")]
+    public void Analyze_RespostaInvalidaFalhaFechadoSemRetry(string body, string expectedError)
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body),
+        });
+        var result = AnalyzeWith(handler);
+        Assert.Equal(expectedError, result.ErrorCode);
+        Assert.Equal(1, handler.Calls);
+        Assert.Null(result.Diagnostic);
+    }
+
+    [Fact]
+    public void Analyze_LengthCapturaFinishReasonEUsageAntesDoFailClosed()
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => ResponseWithFinish("length", includeDiagnostic: true, inputTokens: 21, outputTokens: 100));
+        var result = AnalyzeWith(handler);
+        var usage = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(result.UsagePath));
+
+        Assert.Equal("length", result.FinishReason);
+        Assert.Equal("TRUNCATED_RESPONSE", result.ErrorCode);
+        Assert.Equal(21, result.InputTokens);
+        Assert.Equal(100, result.OutputTokens);
+        Assert.Equal("length", usage.GetProperty("finish_reason").GetString());
+        Assert.Equal(21, usage.GetProperty("input_tokens").GetInt32());
+        Assert.Equal(100, usage.GetProperty("output_tokens").GetInt32());
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public void Analyze_ForcaSafeToAutoFixFalseMesmoQuandoIaRetornaTrue()
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => JsonResponse("AMBIGUOUS", 50, "Sinais mistos.", safeToAutoFix: true));
+        var result = AnalyzeWith(handler);
+        var analysis = File.ReadAllText(result.AnalysisPath);
+        Assert.False(result.Diagnostic!.SafeToAutoFix);
+        Assert.Contains("\"safe_to_auto_fix_final\": false", analysis);
+    }
+
+    [Fact]
+    public void Analyze_TimeoutNaoFazRetry()
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => throw new TaskCanceledException("timeout"));
+        var result = AnalyzeWith(handler);
+        Assert.Equal("TIMEOUT", result.ErrorCode);
+        Assert.Equal(1, handler.Calls);
+        Assert.False(result.Diagnostic is not null);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public void Analyze_Http4xx5xxNaoFazRetry(HttpStatusCode status)
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => new HttpResponseMessage(status));
+        var result = AnalyzeWith(handler);
+        Assert.Equal($"HTTP_STATUS_{(int)status}", result.ErrorCode);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal((int)status, result.HttpStatus);
+    }
+
+    [Fact]
+    public void Analyze_PiiScanFailImpedeHttp()
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => throw new InvalidOperationException());
+        var result = GuardianLite.ExecuteAnalyze(Logs, Stage, Temp, Now,
+            new GuardianNexState(@"C:\Users\nao-enviar", "BACKGROUND"), "UNKNOWN", "fake-key",
+            () => new HttpClient(handler));
+        Assert.Equal("PII_SCAN_FAILED", result.ErrorCode);
+        Assert.False(result.AiCalled);
+        Assert.Equal(0, handler.Calls);
+        Assert.False(result.PiiScanPassed);
+    }
+
+    [Fact]
+    public void Analyze_OutputSomenteSobTemp()
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => JsonResponse("UNKNOWN", 10, "Sem conclusao."));
+        var result = AnalyzeWith(handler);
+        Assert.StartsWith(Path.GetFullPath(Path.Combine(Temp, "PrimeNexGuardian")), result.AnalysisPath, StringComparison.OrdinalIgnoreCase);
+        Assert.StartsWith(Path.GetFullPath(Path.Combine(Temp, "PrimeNexGuardian")), result.UsagePath, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -137,6 +338,106 @@ public sealed class GuardianLiteTests : IDisposable
 
     private static GuardianCycle Cycle(string stage, string error, string reason, string route, string position) =>
         new(Now, Guid.NewGuid().ToString(), route, position, stage, error, reason, 1000);
+
+    private void WriteAmbiguousLogs()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var third = Guid.NewGuid();
+        File.WriteAllLines(Path.Combine(Logs, "prime-nex-export-agent-scheduled-2026-09-28.jsonl"), new[]
+        {
+            Log(Now.AddMinutes(-3), first, "SkippedNotForeground", "NotForeground", "SCHEDULED-SAFE GATE T3 falhou: NexAdmin nao esta em primeiro plano"),
+            Log(Now.AddMinutes(-2), second, "Failed", "UnexpectedException", "item 'Exportar' nao localizado de forma inequivoca"),
+            Log(Now.AddMinutes(-1), third, "NEX_MINIMIZED", null, "TApplication (PID 123) IsIconic=true"),
+        });
+    }
+
+    private GuardianAnalyzeResult AnalyzeWith(CountingHandler handler, string apiKey = "fake-key") =>
+        GuardianLite.ExecuteAnalyze(Logs, Stage, Temp, Now,
+            new GuardianNexState("OPEN", "BACKGROUND"), "UNKNOWN", apiKey,
+            () => new HttpClient(handler));
+
+    private static HttpResponseMessage JsonResponse(string classification, int confidence, string summary, bool safeToAutoFix = false)
+    {
+        var diagnostic = JsonSerializer.Serialize(new
+        {
+            classification,
+            confidence,
+            summary,
+            evidence = new[] { "EXPORT_STAGE vazio", "sinais tecnicos correlacionados" },
+            recommended_action = "Aguardar e revisar o proximo ciclo.",
+            safe_to_auto_fix = safeToAutoFix,
+            needs_human = true,
+        });
+        return ResponseWithDiagnostic("stop", diagnostic, 12, 8);
+    }
+
+    private static HttpResponseMessage ResponseWithFinish(string finishReason, bool includeDiagnostic, int inputTokens, int outputTokens)
+    {
+        var diagnostic = includeDiagnostic ? JsonSerializer.Serialize(new
+        {
+            classification = "UI_UNSAFE_STATE",
+            confidence = 92,
+            summary = "Instabilidade de estado/UI do NEX.",
+            evidence = new[] { "EXPORT_STAGE vazio" },
+            recommended_action = "Aguardar e revisar o proximo ciclo.",
+            safe_to_auto_fix = true,
+            needs_human = true,
+        }) : "{}";
+        return ResponseWithDiagnostic(finishReason, diagnostic, inputTokens, outputTokens);
+    }
+
+    private static HttpResponseMessage ResponseWithDiagnostic(string finishReason, string diagnostic, int inputTokens, int outputTokens)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            choices = new[] { new { finish_reason = finishReason, message = new { content = diagnostic } } },
+            usage = new { prompt_tokens = inputTokens, completion_tokens = outputTokens },
+        });
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(payload) };
+    }
+
+    private static HttpResponseMessage ResponseWithRawField()
+    {
+        var diagnostic = JsonSerializer.Serialize(new
+        {
+            classification = "AMBIGUOUS",
+            confidence = 70,
+            summary = "Sinais contraditorios.",
+            evidence = new[] { "sinais tecnicos correlacionados" },
+            recommended_action = "Aguardar e revisar o proximo ciclo.",
+            safe_to_auto_fix = true,
+            needs_human = true,
+        });
+        var payload = JsonSerializer.Serialize(new
+        {
+            raw_response = "RAW_RESPONSE_SENTINEL",
+            choices = new[] { new { finish_reason = "stop", message = new { content = diagnostic } } },
+            usage = new { prompt_tokens = 12, completion_tokens = 8 },
+        });
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(payload) };
+    }
+
+    private sealed class CountingHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+        public int Calls { get; private set; }
+        public HttpStatusCode? StatusCode { get; private set; }
+        public string RequestBody { get; private set; } = string.Empty;
+        public string? AuthorizationHeader { get; private set; }
+
+        public CountingHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) => _handler = handler;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            RequestBody = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty;
+            AuthorizationHeader = request.Headers.Authorization?.ToString();
+            var response = _handler(request);
+            StatusCode = response.StatusCode;
+            return Task.FromResult(response);
+        }
+    }
 
     private static string Log(DateTimeOffset timestamp, Guid runId, string stage, string? error = null, string? reason = null) =>
         JsonSerializer.Serialize(new { timestamp = timestamp.ToString("O"), runId, stage, errorCode = error, reason, hybridRoute = "V1", nexPosition = "FOREGROUND", routeReason = "SAFE" });

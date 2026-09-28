@@ -1,4 +1,6 @@
 using System.IO;
+using System.Diagnostics;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -51,6 +53,54 @@ internal sealed record GuardianSnapshot(
 
 internal sealed record GuardianDryRunResult(GuardianSnapshot Snapshot, string SnapshotPath, string PromptPath, bool PiiScanPassed);
 
+internal sealed record GuardianAiDiagnostic(
+    [property: JsonPropertyName("classification")] string Classification,
+    [property: JsonPropertyName("confidence")] int Confidence,
+    [property: JsonPropertyName("summary")] string Summary,
+    [property: JsonPropertyName("evidence")] IReadOnlyList<string> Evidence,
+    [property: JsonPropertyName("recommended_action")] string RecommendedAction,
+    [property: JsonPropertyName("safe_to_auto_fix")] bool SafeToAutoFix,
+    [property: JsonPropertyName("needs_human")] bool NeedsHuman);
+
+internal sealed record GuardianUsage(
+    [property: JsonPropertyName("timestamp")] DateTimeOffset Timestamp,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("finish_reason")] string? FinishReason,
+    [property: JsonPropertyName("input_tokens")] int? InputTokens,
+    [property: JsonPropertyName("output_tokens")] int? OutputTokens,
+    [property: JsonPropertyName("latency_ms")] long LatencyMs,
+    [property: JsonPropertyName("http_status")] int? HttpStatus,
+    [property: JsonPropertyName("success")] bool Success,
+    [property: JsonPropertyName("error_code")] string? ErrorCode);
+
+internal sealed record GuardianAnalysisDocument(
+    [property: JsonPropertyName("schema_version")] string SchemaVersion,
+    [property: JsonPropertyName("generated_at")] DateTimeOffset GeneratedAt,
+    [property: JsonPropertyName("diagnostic_source")] string DiagnosticSource,
+    [property: JsonPropertyName("ai_called")] bool AiCalled,
+    [property: JsonPropertyName("ai_call_count")] int AiCallCount,
+    [property: JsonPropertyName("snapshot")] GuardianSnapshot Snapshot,
+    [property: JsonPropertyName("diagnostic")] GuardianAiDiagnostic? Diagnostic,
+    [property: JsonPropertyName("safe_to_auto_fix_final")] bool SafeToAutoFixFinal,
+    [property: JsonPropertyName("error_code")] string? ErrorCode);
+
+internal sealed record GuardianAnalyzeResult(
+    GuardianSnapshot Snapshot,
+    string DiagnosticSource,
+    bool AiCalled,
+    int AiCallCount,
+    string Model,
+    string? FinishReason,
+    int? HttpStatus,
+    long LatencyMs,
+    int? InputTokens,
+    int? OutputTokens,
+    bool PiiScanPassed,
+    GuardianAiDiagnostic? Diagnostic,
+    string? ErrorCode,
+    string AnalysisPath,
+    string UsagePath);
+
 internal static class GuardianLite
 {
     internal const string SchemaVersion = "guardian-lite-v0";
@@ -79,6 +129,9 @@ internal static class GuardianLite
     public static bool IsDryRunFlag(string[] args) =>
         args.Length == 1 && string.Equals(args[0], "--guardian-dry-run", StringComparison.Ordinal);
 
+    public static bool IsAnalyzeFlag(string[] args) =>
+        args.Length == 1 && string.Equals(args[0], "--guardian-analyze", StringComparison.Ordinal);
+
     public static void RunDryRun()
     {
         var now = DateTimeOffset.Now;
@@ -104,6 +157,46 @@ internal static class GuardianLite
         Console.WriteLine("PRODUCTION_MUTATION=NO");
     }
 
+    public static void RunAnalyze()
+    {
+        var now = DateTimeOffset.Now;
+        var nex = ReadCurrentNexState();
+        var result = ExecuteAnalyze(
+            ProductionLogsPath,
+            ProductionStagePath,
+            Path.GetTempPath(),
+            now,
+            nex,
+            "UNKNOWN",
+            apiKey: null,
+            clientFactory: null);
+
+        Console.WriteLine("PRIME_NEX_GUARDIAN_LITE_V0_1=ANALYZE");
+        Console.WriteLine($"RULE_CLASSIFICATION={result.Snapshot.RuleResult.ClassificationCandidate}");
+        Console.WriteLine($"NEEDS_AI={(result.Snapshot.RuleResult.NeedsAi ? "YES" : "NO")}");
+        Console.WriteLine($"DIAGNOSTIC_SOURCE={result.DiagnosticSource}");
+        Console.WriteLine($"AI_CALLED={(result.AiCalled ? "TRUE" : "FALSE")}");
+        Console.WriteLine($"AI_CALL_COUNT={result.AiCallCount}");
+        Console.WriteLine($"MODEL={result.Model}");
+        Console.WriteLine($"HTTP_STATUS={result.HttpStatus?.ToString() ?? "UNKNOWN"}");
+        Console.WriteLine($"LATENCY_MS={result.LatencyMs}");
+        Console.WriteLine($"INPUT_TOKENS={result.InputTokens?.ToString() ?? "UNKNOWN"}");
+        Console.WriteLine($"OUTPUT_TOKENS={result.OutputTokens?.ToString() ?? "UNKNOWN"}");
+        Console.WriteLine($"PII_SCAN={(result.PiiScanPassed ? "PASS" : "FAIL")}");
+        Console.WriteLine($"AI_CLASSIFICATION={result.Diagnostic?.Classification ?? "UNKNOWN"}");
+        Console.WriteLine($"AI_CONFIDENCE={result.Diagnostic?.Confidence.ToString() ?? "UNKNOWN"}");
+        Console.WriteLine($"AI_SUMMARY={result.Diagnostic?.Summary ?? result.ErrorCode ?? "UNKNOWN"}");
+        Console.WriteLine($"AI_EVIDENCE={(result.Diagnostic is null ? "UNKNOWN" : string.Join(" | ", result.Diagnostic.Evidence))}");
+        Console.WriteLine($"AI_RECOMMENDED_ACTION={(result.Diagnostic?.RecommendedAction ?? "UNKNOWN")}");
+        Console.WriteLine("SAFE_TO_AUTO_FIX_FINAL=FALSE");
+        Console.WriteLine($"NEEDS_HUMAN_FINAL={(result.Diagnostic?.NeedsHuman.ToString().ToUpperInvariant() ?? "UNKNOWN")}");
+        Console.WriteLine($"ANALYSIS_PATH={result.AnalysisPath}");
+        Console.WriteLine($"USAGE_PATH={result.UsagePath}");
+        Console.WriteLine($"AI_CALL_BLOCKED_BY_PII_SCAN={(result.ErrorCode == "PII_SCAN_FAILED" ? "YES" : "NO")}");
+        Console.WriteLine("RECOMMENDED_ACTION_EXECUTED=NO");
+        Console.WriteLine("PRODUCTION_MUTATION=NO");
+    }
+
     internal static GuardianDryRunResult ExecuteDryRun(
         string logsPath,
         string stagePath,
@@ -126,6 +219,127 @@ internal static class GuardianLite
         File.WriteAllText(snapshotPath, snapshotJson, new UTF8Encoding(false));
         File.WriteAllText(promptPath, prompt, new UTF8Encoding(false));
         return new GuardianDryRunResult(snapshot, snapshotPath, promptPath, piiSafe);
+    }
+
+    internal static GuardianAnalyzeResult ExecuteAnalyze(
+        string logsPath,
+        string stagePath,
+        string tempRoot,
+        DateTimeOffset now,
+        GuardianNexState nex,
+        string taskState,
+        string? apiKey,
+        Func<HttpClient>? clientFactory)
+    {
+        var outputRoot = Path.GetFullPath(Path.Combine(tempRoot, OutputDirectoryName));
+        EnsureOutputUnderTemp(outputRoot, tempRoot);
+        var snapshot = BuildSnapshot(logsPath, stagePath, now, nex, NormalizeTaskState(taskState));
+        var snapshotJson = JsonSerializer.Serialize(snapshot, JsonOptions);
+        var prompt = BuildPrompt(snapshotJson);
+        var piiSafe = IsSanitized(snapshotJson) && IsSanitized(prompt);
+        var model = "deepseek-flash";
+        string? finishReason = null;
+        GuardianAiDiagnostic? diagnostic = null;
+        var diagnosticSource = "RULE";
+        var aiCalled = false;
+        var aiCallCount = 0;
+        int? httpStatus = null;
+        long latencyMs = 0;
+        int? inputTokens = null;
+        int? outputTokens = null;
+        string? errorCode = null;
+
+        if (!piiSafe)
+        {
+            errorCode = "PII_SCAN_FAILED";
+        }
+        else if (!snapshot.RuleResult.NeedsAi)
+        {
+            diagnostic = BuildRuleDiagnostic(snapshot.RuleResult);
+        }
+        else
+        {
+            diagnosticSource = "AI";
+            var resolvedKey = apiKey ?? Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY");
+            if (string.IsNullOrWhiteSpace(resolvedKey))
+            {
+                errorCode = "DEEPSEEK_CONFIG_MISSING";
+            }
+            else
+            {
+                aiCalled = true;
+                aiCallCount = 1;
+                var stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    using var client = clientFactory?.Invoke() ?? new HttpClient();
+                    client.Timeout = TimeSpan.FromSeconds(15);
+                    using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.deepseek.com/chat/completions");
+                    request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + resolvedKey);
+                    var body = new
+                    {
+                        model,
+                        messages = new[]
+                        {
+                            new { role = "system", content = prompt },
+                            new { role = "user", content = "Return the requested diagnostic JSON object." },
+                        },
+                        response_format = new { type = "json_object" },
+                        max_tokens = 1000,
+                        stream = false,
+                        thinking = new { type = "disabled" },
+                    };
+                    request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+                    using var response = client.SendAsync(request).GetAwaiter().GetResult();
+                    httpStatus = (int)response.StatusCode;
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        errorCode = "HTTP_STATUS_" + httpStatus.Value;
+                    }
+                    else
+                    {
+                        var responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                        if (!TryParseAiResponse(responseText, out diagnostic, out finishReason, out inputTokens, out outputTokens, out errorCode))
+                        {
+                            diagnostic = null;
+                        }
+                    }
+                }
+                catch (TaskCanceledException)
+                {
+                    errorCode = "TIMEOUT";
+                }
+                catch (HttpRequestException)
+                {
+                    errorCode = "HTTP_EXCEPTION";
+                }
+                catch (JsonException)
+                {
+                    errorCode = "INVALID_RESPONSE_JSON";
+                }
+                catch
+                {
+                    errorCode = "ANALYZE_FAILED";
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                    latencyMs = stopwatch.ElapsedMilliseconds;
+                }
+            }
+        }
+
+        Directory.CreateDirectory(outputRoot);
+        var stamp = now.ToUniversalTime().ToString("yyyyMMdd-HHmmss-fff");
+        var analysisPath = Path.Combine(outputRoot, $"guardian-analysis-{stamp}.json");
+        var usagePath = Path.Combine(outputRoot, $"guardian-usage-{stamp}.json");
+        var analysis = new GuardianAnalysisDocument(
+            SchemaVersion, now, diagnosticSource, aiCalled, aiCallCount, snapshot,
+            diagnostic, false, errorCode);
+        var usage = new GuardianUsage(now, model, finishReason, inputTokens, outputTokens, latencyMs, httpStatus, diagnostic is not null, errorCode);
+        File.WriteAllText(analysisPath, JsonSerializer.Serialize(analysis, JsonOptions), new UTF8Encoding(false));
+        File.WriteAllText(usagePath, JsonSerializer.Serialize(usage, JsonOptions), new UTF8Encoding(false));
+        return new GuardianAnalyzeResult(snapshot, diagnosticSource, aiCalled, aiCallCount, model, finishReason, httpStatus, latencyMs, inputTokens, outputTokens, piiSafe, diagnostic, errorCode, analysisPath, usagePath);
     }
 
     internal static GuardianSnapshot BuildSnapshot(
@@ -214,8 +428,18 @@ internal static class GuardianLite
 
     internal static string BuildPrompt(string sanitizedSnapshotJson) => $$"""
         You are PRIME NEX GUARDIAN LITE V0, a read-only diagnostic assistant.
-        Analyze only the sanitized technical snapshot below. Return JSON only with:
-        classification, confidence, summary, evidence, recommended_action, safe_to_auto_fix, needs_human.
+        Analyze only the sanitized technical snapshot below. Return exactly ONE RFC 8259 JSON object: no Markdown, ```json, code fences, comments, or text before or after it. Use double quotes for property names and strings; no trailing commas.
+        Use exactly this schema (example values show form/types only; do not copy values):
+        {
+          "classification": "AMBIGUOUS",
+          "confidence": 50,
+          "summary": "Short text.",
+          "evidence": ["Technical evidence 1", "Technical evidence 2"],
+          "recommended_action": "Recommended action for a human only.",
+          "safe_to_auto_fix": false,
+          "needs_human": true
+        }
+        Do not add fields or omit fields. confidence must be an integer 0-100; evidence must be a JSON array of strings; safe_to_auto_fix must be boolean false; needs_human must be boolean.
         Allowed classifications: UI_FOREGROUND, UI_UNSAFE_STATE, NEX_MINIMIZED, NEX_CLOSED,
         G13_RESIDUE, VALIDATOR, TASK, NETWORK, DOWNSTREAM, FILE, AMBIGUOUS, UNKNOWN.
         Do not invent evidence. Use AMBIGUOUS or UNKNOWN when evidence is insufficient or contradictory.
@@ -223,6 +447,136 @@ internal static class GuardianLite
         SNAPSHOT:
         {{sanitizedSnapshotJson}}
         """;
+
+    private static readonly HashSet<string> AllowedClassifications = new(StringComparer.Ordinal)
+    {
+        "UI_FOREGROUND", "UI_UNSAFE_STATE", "NEX_MINIMIZED", "NEX_CLOSED", "G13_RESIDUE",
+        "VALIDATOR", "TASK", "NETWORK", "DOWNSTREAM", "FILE", "AMBIGUOUS", "UNKNOWN",
+    };
+
+    private static GuardianAiDiagnostic BuildRuleDiagnostic(GuardianRuleResult rule)
+    {
+        var summary = rule.ClassificationCandidate switch
+        {
+            "NEX_CLOSED" => "Regra local confirmou que o NEX está fechado.",
+            "NEX_MINIMIZED" => "Regra local confirmou que o NEX está minimizado.",
+            "G13_RESIDUE" => "Regra local identificou resíduo elegível do G13.",
+            _ => "Regra local não encontrou evidência determinística suficiente para uma conclusão única.",
+        };
+        return new GuardianAiDiagnostic(
+            rule.ClassificationCandidate,
+            100,
+            summary,
+            rule.Evidence,
+            "Nenhuma ação automática; manter somente observação read-only.",
+            false,
+            true);
+    }
+
+    private static bool TryParseAiResponse(
+        string responseText,
+        out GuardianAiDiagnostic? diagnostic,
+        out string? finishReason,
+        out int? inputTokens,
+        out int? outputTokens,
+        out string? errorCode)
+    {
+        diagnostic = null;
+        finishReason = null;
+        inputTokens = null;
+        outputTokens = null;
+        errorCode = null;
+        try
+        {
+            using var rootDocument = JsonDocument.Parse(responseText);
+            var root = rootDocument.RootElement;
+            if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+            {
+                if (usage.TryGetProperty("prompt_tokens", out var promptTokens) && promptTokens.TryGetInt32(out var input)) inputTokens = input;
+                if (usage.TryGetProperty("completion_tokens", out var completionTokens) && completionTokens.TryGetInt32(out var output)) outputTokens = output;
+            }
+
+            if (!root.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0)
+            {
+                errorCode = "EMPTY_RESPONSE";
+                return false;
+            }
+
+            var choice = choices[0];
+            var rawFinishReason = choice.TryGetProperty("finish_reason", out var finish) && finish.ValueKind == JsonValueKind.String
+                ? finish.GetString()
+                : null;
+            finishReason = SafeEnum(rawFinishReason, "UNKNOWN");
+            if (!string.Equals(rawFinishReason, "stop", StringComparison.OrdinalIgnoreCase))
+            {
+                errorCode = string.Equals(rawFinishReason, "length", StringComparison.OrdinalIgnoreCase)
+                    ? "TRUNCATED_RESPONSE"
+                    : "UNEXPECTED_FINISH_REASON";
+                return false;
+            }
+
+            if (!choice.TryGetProperty("message", out var message) ||
+                !message.TryGetProperty("content", out var content) ||
+                content.ValueKind != JsonValueKind.String ||
+                string.IsNullOrWhiteSpace(content.GetString()))
+            {
+                errorCode = "EMPTY_RESPONSE";
+                return false;
+            }
+
+            if (!TryValidateDiagnostic(content.GetString()!, out diagnostic, out errorCode)) return false;
+            diagnostic = diagnostic! with { SafeToAutoFix = false };
+            return true;
+        }
+        catch (JsonException)
+        {
+            errorCode = "INVALID_RESPONSE_JSON";
+            return false;
+        }
+    }
+
+    private static bool TryValidateDiagnostic(string content, out GuardianAiDiagnostic? diagnostic, out string? errorCode)
+    {
+        diagnostic = null;
+        errorCode = null;
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                errorCode = "INVALID_DIAGNOSTIC_SCHEMA";
+                return false;
+            }
+
+            var required = new[] { "classification", "confidence", "summary", "evidence", "recommended_action", "safe_to_auto_fix", "needs_human" };
+            if (required.Any(name => !root.TryGetProperty(name, out _)))
+            {
+                errorCode = "INVALID_DIAGNOSTIC_SCHEMA";
+                return false;
+            }
+
+            diagnostic = JsonSerializer.Deserialize<GuardianAiDiagnostic>(content, JsonOptions);
+            if (diagnostic is null || !AllowedClassifications.Contains(diagnostic.Classification) ||
+                diagnostic.Confidence is < 0 or > 100 ||
+                string.IsNullOrWhiteSpace(diagnostic.Summary) || diagnostic.Summary.Length > 1000 ||
+                diagnostic.Evidence is null || diagnostic.Evidence.Count > 8 ||
+                diagnostic.Evidence.Any(e => string.IsNullOrWhiteSpace(e) || e.Length > 300) ||
+                string.IsNullOrWhiteSpace(diagnostic.RecommendedAction) || diagnostic.RecommendedAction.Length > 1000)
+            {
+                diagnostic = null;
+                errorCode = "INVALID_DIAGNOSTIC_SCHEMA";
+                return false;
+            }
+
+            return true;
+        }
+        catch (JsonException)
+        {
+            errorCode = "INVALID_DIAGNOSTIC_JSON";
+            return false;
+        }
+    }
 
     internal static string NormalizeReason(string? reason, string stage, string? errorCode)
     {
@@ -239,7 +593,7 @@ internal static class GuardianLite
 
     internal static bool IsSanitized(string value)
     {
-        var blockedTerms = new[] { "DEEPSEEK_API_KEY", "NEX_PRIME_INTEGRATION_SECRET", "Authorization:", "Bearer ", @"C:\Users\" };
+        var blockedTerms = new[] { "DEEPSEEK_API_KEY", "NEX_PRIME_INTEGRATION_SECRET", "Authorization:", "Bearer ", @"C:\Users\", @"C:\\Users\\" };
         if (blockedTerms.Any(x => value.Contains(x, StringComparison.OrdinalIgnoreCase))) return false;
         if (Regex.IsMatch(value, @"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b")) return false;
         if (Regex.IsMatch(value, @"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b")) return false;
