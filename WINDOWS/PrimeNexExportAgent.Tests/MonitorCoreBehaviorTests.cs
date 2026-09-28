@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Xunit;
 
@@ -262,6 +263,91 @@ public sealed class MonitorCoreBehaviorTests : IDisposable
         Assert.Contains("LASTSUCCESS=Success", streak);
     }
 
+    // ---------------------------------------------------------------- Guardian V1: paths e resultado do processo atual.
+
+    [Fact]
+    public void Guardian_UsaPathsDaMesmaExecucaoERejeitaDiretoriosPrefixadosOuTraversal()
+    {
+        var root = Path.Combine(_fixtureRoot, "PrimeNexGuardian");
+        Directory.CreateDirectory(root);
+        var analysis = Path.Combine(root, "guardian-analysis-current.json");
+        var usage = Path.Combine(root, "guardian-usage-current.json");
+        File.WriteAllText(analysis, ValidGuardianAnalysis("RULE"));
+        File.WriteAllText(usage, "{}");
+
+        var stdout = "ANALYSIS_PATH=" + analysis + "\r\nUSAGE_PATH=" + usage;
+        var current = RunCore($$"""
+            $p = Get-GuardianResultPathsFromStdOut -StdOut '{{EscapePowerShell(stdout)}}' -Root '{{root}}'
+            Write-Output ('ANALYSIS=' + $p.AnalysisPath)
+            Write-Output ('USAGE=' + $p.UsagePath)
+            """);
+        Assert.Contains("ANALYSIS=" + analysis, current);
+        Assert.Contains("USAGE=" + usage, current);
+
+        var evilRoot = root + "-Evil";
+        Directory.CreateDirectory(evilRoot);
+        var evil = Path.Combine(evilRoot, "guardian-analysis.json");
+        File.WriteAllText(evil, "{}");
+        Assert.Equal("REJECTED", ValidateGuardianPath(evil, root));
+
+        var outside = Path.Combine(_fixtureRoot, "guardian-analysis-outside.json");
+        File.WriteAllText(outside, "{}");
+        var traversal = Path.Combine(root, "..", Path.GetFileName(outside));
+        Assert.Equal("REJECTED", ValidateGuardianPath(traversal, root));
+    }
+
+    [Theory]
+    [InlineData("RULE", "NEX_MINIMIZED")]
+    [InlineData("AI", "UI_UNSAFE_STATE")]
+    public void Guardian_LeDiagnosticoRuleOuIaSomenteComoTexto(string source, string classification)
+    {
+        var root = Path.Combine(_fixtureRoot, "guardian-" + source);
+        Directory.CreateDirectory(root);
+        var analysis = Path.Combine(root, "guardian-analysis.json");
+        var usage = Path.Combine(root, "guardian-usage.json");
+        File.WriteAllText(analysis, ValidGuardianAnalysis(source, classification));
+        File.WriteAllText(usage, "{}");
+
+        var output = RunCore($$"""
+            $r = Get-GuardianMonitorResult -AnalysisPath '{{analysis}}' -UsagePath '{{usage}}' -Root '{{root}}'
+            Write-Output ('SUCCESS=' + $r.Success)
+            Write-Output ('SOURCE=' + $r.DiagnosticSource)
+            Write-Output ('CLASS=' + $r.Classification)
+            Write-Output ('CONFIDENCE=' + $r.Confidence)
+            Write-Output ('EVIDENCE=' + $r.Evidence)
+            Write-Output ('ACTION=' + $r.RecommendedAction)
+            Write-Output ('AUTO=' + $r.SafeToAutoFixFinal)
+            """);
+
+        Assert.Contains("SUCCESS=True", output);
+        Assert.Contains("SOURCE=" + source, output);
+        Assert.Contains("CLASS=" + classification, output);
+        Assert.Contains("CONFIDENCE=62", output);
+        Assert.Contains("EVIDENCE=evidencia tecnica", output);
+        Assert.Contains("ACTION=Somente revisao humana.", output);
+        Assert.Contains("AUTO=False", output);
+    }
+
+    [Fact]
+    public void Guardian_JsonInvalidoOuIncompletoFalhaFechado()
+    {
+        var root = Path.Combine(_fixtureRoot, "guardian-invalid");
+        Directory.CreateDirectory(root);
+        var analysis = Path.Combine(root, "guardian-analysis.json");
+        var usage = Path.Combine(root, "guardian-usage.json");
+        File.WriteAllText(analysis, "{");
+        File.WriteAllText(usage, "{}");
+
+        var output = RunCore($$"""
+            $r = Get-GuardianMonitorResult -AnalysisPath '{{analysis}}' -UsagePath '{{usage}}' -Root '{{root}}'
+            Write-Output ('SUCCESS=' + $r.Success)
+            Write-Output ('ERROR=' + $r.Error)
+            """);
+
+        Assert.Contains("SUCCESS=False", output);
+        Assert.Contains("Falha ao ler diagnostico Guardian", output);
+    }
+
     // ---------------------------------------------------------------- H / I
 
     [Fact]
@@ -324,6 +410,32 @@ public sealed class MonitorCoreBehaviorTests : IDisposable
 
     private static string Jsonl(string runId, string stage, string timestamp)
         => $$"""{"timestamp":"{{timestamp}}","runId":"{{runId}}","stage":"{{stage}}","errorCode":null,"fileName":null,"reason":null,"hybridRoute":null,"nexPosition":null,"routeReason":null}""";
+
+    private string ValidateGuardianPath(string path, string root)
+    {
+        var output = RunCore($"try {{ $null = Get-GuardianCanonicalJsonPath -Path '{path}' -Root '{root}'; Write-Output 'ACCEPTED' }} catch {{ Write-Output 'REJECTED' }}");
+        return output.Trim();
+    }
+
+    private static string ValidGuardianAnalysis(string source, string classification = "NEX_MINIMIZED") =>
+        JsonSerializer.Serialize(new
+        {
+            generated_at = "2026-09-28T22:00:00-03:00",
+            diagnostic_source = source,
+            safe_to_auto_fix_final = false,
+            error_code = (string?)null,
+            diagnostic = new
+            {
+                classification,
+                confidence = 62,
+                summary = "Resumo tecnico.",
+                evidence = new[] { "evidencia tecnica" },
+                recommended_action = "Somente revisao humana.",
+                needs_human = true,
+            },
+        });
+
+    private static string EscapePowerShell(string value) => value.Replace("'", "''");
 
     private Health EvaluateOutbox(string countsLiteral, string? oldestOpen)
     {

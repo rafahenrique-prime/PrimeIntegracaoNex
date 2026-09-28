@@ -151,6 +151,33 @@ public sealed class MonitorJsonCompatibilityTests
         Assert.Equal("Success", historical.RootElement[1].GetProperty("stage").GetString());
     }
 
+    [Fact]
+    public void GuardianV1_UsaTriggerManualAssincronoSemAlterarSaudeDoMonitor()
+    {
+        var monitorSource = ReadMonitorSource();
+
+        Assert.Contains("'🧠 Analisar com Guardian'", monitorSource);
+        Assert.Contains("-Title '🧠 GUARDIAN'", monitorSource);
+        Assert.Contains("$guardianButton.Enabled = $false", monitorSource);
+        Assert.Contains("$guardianButton.Enabled = $true", monitorSource);
+        Assert.Contains("$guardianState.Text = 'Aguardando clique manual'", monitorSource);
+        Assert.Contains("$guardianState.Text = 'Analisando...'", monitorSource);
+        Assert.Contains("$guardianState.Text = 'Concluido'", monitorSource);
+        Assert.Contains("$guardianState.Text = 'Erro: '", monitorSource);
+        Assert.Contains("$guardianTimer", monitorSource);
+        Assert.Contains("$psi.Arguments = '--guardian-analyze'", monitorSource);
+        Assert.Contains("$process.StandardOutput.ReadToEndAsync()", monitorSource);
+        Assert.Contains("$process.StandardError.ReadToEndAsync()", monitorSource);
+        Assert.Contains("Get-GuardianResultPathsFromStdOut", monitorSource);
+        Assert.Contains("Get-GuardianCanonicalJsonPath", monitorSource);
+        Assert.Contains("Nenhuma acao automatica e executada pelo Guardian.", monitorSource);
+        Assert.DoesNotContain("DEEPSEEK_API_KEY", monitorSource);
+        Assert.DoesNotContain("Invoke-Expression", monitorSource, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Get-ChildItem -LiteralPath $script:GuardianOutputDirectory", monitorSource);
+        Assert.Equal(1, CountOccurrences(monitorSource, "$process.Start()"));
+        Assert.Equal(1, CountOccurrences(monitorSource, "$overall = Get-OverallStatus"));
+    }
+
     private static string FormatExpectedDuration(double durationSeconds)
     {
         var totalSeconds = (long)Math.Floor(durationSeconds);

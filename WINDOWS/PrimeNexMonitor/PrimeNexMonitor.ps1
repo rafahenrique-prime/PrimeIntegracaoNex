@@ -263,16 +263,40 @@ $errorCodeValue = Add-InformationRow -Table $errorSection.Table -Caption 'Codigo
 $errorValue = Add-InformationRow -Table $errorSection.Table -Caption 'Motivo' -Name 'ErrorSummary'
 $errorSection.Box.Visible = $false
 
+$guardianSection = New-Section -Title '🧠 GUARDIAN' -Height 292
+$guardianState = Add-InformationRow -Table $guardianSection.Table -Caption 'Estado' -Name 'GuardianState'
+$guardianSource = Add-InformationRow -Table $guardianSection.Table -Caption 'Origem' -Name 'GuardianSource'
+$guardianClassification = Add-InformationRow -Table $guardianSection.Table -Caption 'Classificacao' -Name 'GuardianClassification'
+$guardianConfidence = Add-InformationRow -Table $guardianSection.Table -Caption 'Confianca' -Name 'GuardianConfidence'
+$guardianSummary = Add-InformationRow -Table $guardianSection.Table -Caption 'Resumo' -Name 'GuardianSummary'
+$guardianEvidence = Add-InformationRow -Table $guardianSection.Table -Caption 'Evidencias' -Name 'GuardianEvidence'
+$guardianAction = Add-InformationRow -Table $guardianSection.Table -Caption 'Recomendacao' -Name 'GuardianAction'
+$guardianNeedsHuman = Add-InformationRow -Table $guardianSection.Table -Caption 'Humano' -Name 'GuardianNeedsHuman'
+$guardianAutoFix = Add-InformationRow -Table $guardianSection.Table -Caption 'Auto-fix' -Name 'GuardianAutoFix'
+$guardianLastAnalysis = Add-InformationRow -Table $guardianSection.Table -Caption 'Ultima analise' -Name 'GuardianLastAnalysis'
+$guardianNotice = Add-InformationRow -Table $guardianSection.Table -Caption 'Aviso' -Name 'GuardianNotice'
+$guardianState.Text = 'Aguardando clique manual'
+$guardianNotice.Text = 'Nenhuma acao automatica e executada pelo Guardian.'
+$guardianButtonRow = $guardianSection.Table.RowCount
+$guardianSection.Table.RowCount++
+$guardianButton = [System.Windows.Forms.Button]::new()
+$guardianButton.Text = '🧠 Analisar com Guardian'
+$guardianButton.AutoSize = $true
+$guardianButton.Anchor = 'Left'
+$guardianSection.Table.Controls.Add($guardianButton, 1, $guardianButtonRow)
+
 $rightColumn.Controls.Add($pipelineSection.Box)
 $rightColumn.Controls.Add($exportSection.Box)
 $rightColumn.Controls.Add($lastSuccessSection.Box)
 $rightColumn.Controls.Add($blockSection.Box)
 $rightColumn.Controls.Add($errorSection.Box)
-$rightColumn.Controls.SetChildIndex($pipelineSection.Box, 4)
-$rightColumn.Controls.SetChildIndex($exportSection.Box, 3)
-$rightColumn.Controls.SetChildIndex($lastSuccessSection.Box, 2)
-$rightColumn.Controls.SetChildIndex($blockSection.Box, 1)
-$rightColumn.Controls.SetChildIndex($errorSection.Box, 0)
+$rightColumn.Controls.Add($guardianSection.Box)
+$rightColumn.Controls.SetChildIndex($pipelineSection.Box, 5)
+$rightColumn.Controls.SetChildIndex($exportSection.Box, 4)
+$rightColumn.Controls.SetChildIndex($lastSuccessSection.Box, 3)
+$rightColumn.Controls.SetChildIndex($blockSection.Box, 2)
+$rightColumn.Controls.SetChildIndex($errorSection.Box, 1)
+$rightColumn.Controls.SetChildIndex($guardianSection.Box, 0)
 
 $script:AgentRuntimeId = Get-AgentRuntimeId
 $updatedLabel = [System.Windows.Forms.Label]::new()
@@ -295,6 +319,101 @@ $root.Controls.SetChildIndex($updatedLabel, 0)
 $script:OutboxCache = $null
 $script:OutboxCacheAt = [datetime]::MinValue
 $script:OutboxFailureStreak = 0
+$script:GuardianProcess = $null
+$script:GuardianStdOutTask = $null
+$script:GuardianStdErrTask = $null
+
+function Reset-GuardianPresentation {
+    $guardianSource.Text = '-'
+    $guardianClassification.Text = '-'
+    $guardianConfidence.Text = '-'
+    $guardianSummary.Text = '-'
+    $guardianEvidence.Text = '-'
+    $guardianAction.Text = '-'
+    $guardianNeedsHuman.Text = '-'
+    $guardianAutoFix.Text = '-'
+    $guardianLastAnalysis.Text = '-'
+}
+
+function Complete-GuardianManualAnalysis {
+    try {
+        if ($script:GuardianProcess.ExitCode -ne 0) {
+            throw ('Guardian encerrou com codigo ' + $script:GuardianProcess.ExitCode + '.')
+        }
+
+        $stdout = $script:GuardianStdOutTask.GetAwaiter().GetResult()
+        $null = $script:GuardianStdErrTask.GetAwaiter().GetResult()
+        $paths = Get-GuardianResultPathsFromStdOut -StdOut $stdout
+        $guardian = Get-GuardianMonitorResult -AnalysisPath $paths.AnalysisPath -UsagePath $paths.UsagePath
+        if (-not $guardian.Success) { throw $guardian.Error }
+
+        $guardianState.Text = 'Concluido'
+        $guardianSource.Text = if ($guardian.DiagnosticSource -eq 'RULE') { 'REGRA' } else { 'IA' }
+        $guardianClassification.Text = $guardian.Classification
+        $guardianConfidence.Text = $guardian.Confidence.ToString() + '%'
+        $guardianSummary.Text = $guardian.Summary
+        $guardianEvidence.Text = $guardian.Evidence
+        $guardianAction.Text = $guardian.RecommendedAction
+        $guardianNeedsHuman.Text = if ($guardian.NeedsHuman) { 'SIM' } else { 'NAO' }
+        $guardianAutoFix.Text = if ($guardian.SafeToAutoFixFinal) { 'SIM' } else { 'NAO' }
+        $guardianLastAnalysis.Text = Format-DateTime -Value $guardian.GeneratedAt
+    }
+    catch {
+        Reset-GuardianPresentation
+        $guardianState.Text = 'Erro: ' + $_.Exception.Message
+    }
+    finally {
+        if ($null -ne $script:GuardianProcess) { $script:GuardianProcess.Dispose() }
+        $script:GuardianProcess = $null
+        $script:GuardianStdOutTask = $null
+        $script:GuardianStdErrTask = $null
+        $guardianButton.Enabled = $true
+    }
+}
+
+$guardianTimer = [System.Windows.Forms.Timer]::new()
+$guardianTimer.Interval = 150
+$guardianTimer.Add_Tick({
+    if ($null -eq $script:GuardianProcess) {
+        $guardianTimer.Stop()
+        return
+    }
+    if (-not $script:GuardianProcess.HasExited) { return }
+
+    $guardianTimer.Stop()
+    Complete-GuardianManualAnalysis
+})
+
+$guardianButton.Add_Click({
+    if ($null -ne $script:GuardianProcess) { return }
+
+    Reset-GuardianPresentation
+    $guardianState.Text = 'Analisando...'
+    $guardianButton.Enabled = $false
+    try {
+        $agentPath = Resolve-GuardianAgentPath
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $agentPath
+        $psi.Arguments = '--guardian-analyze'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $psi
+        if (-not $process.Start()) { throw 'Nao foi possivel iniciar o Guardian.' }
+
+        $script:GuardianProcess = $process
+        $script:GuardianStdOutTask = $process.StandardOutput.ReadToEndAsync()
+        $script:GuardianStdErrTask = $process.StandardError.ReadToEndAsync()
+        $guardianTimer.Start()
+    }
+    catch {
+        Reset-GuardianPresentation
+        $guardianState.Text = 'Erro: ' + $_.Exception.Message
+        $guardianButton.Enabled = $true
+    }
+})
 
 $refreshAction = {
     $timer.Enabled = $false
@@ -478,7 +597,13 @@ $timer = [System.Windows.Forms.Timer]::new()
 $timer.Interval = $script:RefreshMilliseconds
 $timer.Add_Tick($refreshAction)
 $form.Add_Shown($refreshAction)
-$form.Add_FormClosed({ $timer.Stop(); $timer.Dispose() })
+$form.Add_FormClosed({
+    $timer.Stop()
+    $timer.Dispose()
+    $guardianTimer.Stop()
+    $guardianTimer.Dispose()
+    if ($null -ne $script:GuardianProcess -and $script:GuardianProcess.HasExited) { $script:GuardianProcess.Dispose() }
+})
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [System.Windows.Forms.Application]::Run($form)

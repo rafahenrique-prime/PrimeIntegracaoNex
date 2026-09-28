@@ -65,6 +65,7 @@ $script:LogDirectory = 'C:\Nex\PrimeIntegracaoNex\LOGS'
 $script:ExportDirectory = 'C:\Nex\PrimeIntegracaoNex\EXPORTADOS'
 $script:ExportStageDirectory = 'C:\Nex\PrimeIntegracaoNex\EXPORT_STAGE'
 $script:AgentRuntimePath = 'C:\Nex\PrimeIntegracaoNex\WINDOWS\PrimeNexExportAgent\bin\Debug\net10.0-windows\PrimeNexExportAgent.exe'
+$script:GuardianOutputDirectory = Join-Path ([System.IO.Path]::GetTempPath()) 'PrimeNexGuardian'
 $script:ExpectedNexPath = 'C:\Nex\NexAdmin.exe'
 $script:RefreshMilliseconds = 12000
 $script:StaleExportMinutes = 15
@@ -573,6 +574,118 @@ function Get-NexSnapshot {
     }
 
     return [pscustomobject]$result
+}
+
+function Resolve-GuardianAgentPath {
+    param(
+        [string]$CandidatePath = $script:AgentRuntimePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CandidatePath) -or $CandidatePath -notmatch '^[A-Za-z]:\\') {
+        throw 'Executavel do Guardian invalido.'
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($CandidatePath)
+    if (-not $fullPath.EndsWith('.exe', [System.StringComparison]::OrdinalIgnoreCase) -or -not [System.IO.File]::Exists($fullPath)) {
+        throw 'Executavel compativel do Guardian nao encontrado. Nenhum build ou deploy foi iniciado.'
+    }
+
+    return $fullPath
+}
+
+function Get-GuardianCanonicalJsonPath {
+    param(
+        [string]$Path,
+        [string]$Root = $script:GuardianOutputDirectory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Path -notmatch '^[A-Za-z]:\\' -or $Path.StartsWith('\\')) {
+        throw 'Caminho de artefato Guardian invalido.'
+    }
+
+    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $candidateFull = [System.IO.Path]::GetFullPath($Path)
+    $rootPrefix = $rootFull + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $candidateFull.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Artefato Guardian fora do diretorio temporario autorizado.'
+    }
+    if (-not $candidateFull.EndsWith('.json', [System.StringComparison]::OrdinalIgnoreCase) -or -not [System.IO.File]::Exists($candidateFull)) {
+        throw 'Artefato Guardian JSON inexistente ou invalido.'
+    }
+
+    $resolvedRoot = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $rootFull -ErrorAction Stop).ProviderPath).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $resolvedCandidate = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $candidateFull -ErrorAction Stop).ProviderPath)
+    $resolvedPrefix = $resolvedRoot + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedCandidate.StartsWith($resolvedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Artefato Guardian resolvido fora do diretorio temporario autorizado.'
+    }
+
+    return $resolvedCandidate
+}
+
+function Get-GuardianResultPathsFromStdOut {
+    param(
+        [string]$StdOut,
+        [string]$Root = $script:GuardianOutputDirectory
+    )
+
+    $analysisLines = @($StdOut -split "`r?`n" | Where-Object { $_.StartsWith('ANALYSIS_PATH=', [System.StringComparison]::Ordinal) })
+    $usageLines = @($StdOut -split "`r?`n" | Where-Object { $_.StartsWith('USAGE_PATH=', [System.StringComparison]::Ordinal) })
+    if ($analysisLines.Count -ne 1 -or $usageLines.Count -ne 1) {
+        throw 'Saida do Guardian sem os paths unicos da execucao corrente.'
+    }
+
+    return [pscustomobject]@{
+        AnalysisPath = Get-GuardianCanonicalJsonPath -Path $analysisLines[0].Substring('ANALYSIS_PATH='.Length) -Root $Root
+        UsagePath = Get-GuardianCanonicalJsonPath -Path $usageLines[0].Substring('USAGE_PATH='.Length) -Root $Root
+    }
+}
+
+function Get-GuardianMonitorResult {
+    param(
+        [string]$AnalysisPath,
+        [string]$UsagePath,
+        [string]$Root = $script:GuardianOutputDirectory
+    )
+
+    try {
+        $analysis = Get-Content -LiteralPath (Get-GuardianCanonicalJsonPath -Path $AnalysisPath -Root $Root) -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $null = Get-Content -LiteralPath (Get-GuardianCanonicalJsonPath -Path $UsagePath -Root $Root) -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($analysis.diagnostic_source -notin @('RULE', 'AI')) { throw 'Origem do diagnostico Guardian invalida.' }
+        if ($analysis.safe_to_auto_fix_final -isnot [bool] -or $analysis.safe_to_auto_fix_final) { throw 'Contrato Guardian de auto-fix invalido.' }
+
+        if ($null -eq $analysis.diagnostic) {
+            $code = Get-DisplayValue -Value $analysis.error_code -Fallback 'Diagnostico Guardian indisponivel.'
+            return [pscustomobject]@{ Success = $false; Error = $code }
+        }
+
+        $diagnostic = $analysis.diagnostic
+        if ([string]::IsNullOrWhiteSpace([string]$diagnostic.classification) -or
+            $diagnostic.confidence -isnot [System.ValueType] -or [int]$diagnostic.confidence -lt 0 -or [int]$diagnostic.confidence -gt 100 -or
+            [string]::IsNullOrWhiteSpace([string]$diagnostic.summary) -or
+            $null -eq $diagnostic.evidence -or
+            [string]::IsNullOrWhiteSpace([string]$diagnostic.recommended_action) -or
+            $diagnostic.needs_human -isnot [bool]) {
+            throw 'Diagnostico Guardian incompleto ou invalido.'
+        }
+
+        return [pscustomobject]@{
+            Success = $true
+            Error = ''
+            DiagnosticSource = [string]$analysis.diagnostic_source
+            Classification = [string]$diagnostic.classification
+            Confidence = [int]$diagnostic.confidence
+            Summary = [string]$diagnostic.summary
+            Evidence = (@($diagnostic.evidence | ForEach-Object { [string]$_ }) -join ' | ')
+            RecommendedAction = [string]$diagnostic.recommended_action
+            NeedsHuman = [bool]$diagnostic.needs_human
+            SafeToAutoFixFinal = [bool]$analysis.safe_to_auto_fix_final
+            GeneratedAt = [string]$analysis.generated_at
+        }
+    }
+    catch {
+        return [pscustomobject]@{ Success = $false; Error = 'Falha ao ler diagnostico Guardian: ' + $_.Exception.Message }
+    }
 }
 
 function Get-TerminalCode {
