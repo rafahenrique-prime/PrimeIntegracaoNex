@@ -58,6 +58,12 @@ if (args.Length == 1 && args[0] == "--inspect-readonly")
     return;
 }
 
+if (PrimeNexExportAgent.Diagnostics.GuardianLite.IsDryRunFlag(args))
+{
+    PrimeNexExportAgent.Diagnostics.GuardianLite.RunDryRun();
+    return;
+}
+
 if (args.Length == 1 && args[0] == "--diagnostic-send-export-shortcut-once")
 {
     PrimeNexExportAgent.Diagnostics.SendExportShortcutOnceProbe.Run();
@@ -151,6 +157,7 @@ if (PrimeNexExportAgent.Diagnostics.IndividualStatementOnceProbe.IsProbeFlag(arg
 
 Console.WriteLine("PRIME NEX EXPORT AGENT - F6.14B2.10B1. Sem argumento reconhecido, ZERO acao foi executada.");
 Console.WriteLine("Use --inspect-readonly para uma inspecao somente-leitura.");
+Console.WriteLine("Use --guardian-dry-run para gerar snapshot e prompt sanitizados do Guardian Lite V0 (SOMENTE LEITURA, zero IA/rede/mutacao produtiva; output somente em %TEMP%\\PrimeNexGuardian).");
 Console.WriteLine("Use --diagnostic-send-export-shortcut-once para o probe supervisionado de Shift+F5 (PODE enviar tecla real).");
 Console.WriteLine("Use --diagnostic-configure-save-dialog-readback-once para o probe supervisionado de Configure+ReadBack do Save Dialog (PODE enviar tecla real e escrever campos - NUNCA clica Salvar/Cancelar). So execute sob o ritual BEFORE/AFTER.");
 Console.WriteLine("Use --diagnostic-configure-save-dialog-click-save-once para o probe supervisionado que TAMBEM clica Salvar (BM_CLICK) exatamente 1 vez apos Configure+ReadBack. So execute sob o ritual BEFORE/AFTER, com autorizacao humana explicita para o primeiro ClickSave real.");
