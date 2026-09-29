@@ -126,17 +126,30 @@ internal static class GuardianLite
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
     };
 
+    // A flag do Guardian e sempre o primeiro argumento; argumentos extras nunca
+    // desviam para o fluxo produtivo e so' sao lidos por ParseTaskStateArgument.
     public static bool IsDryRunFlag(string[] args) =>
-        args.Length == 1 && string.Equals(args[0], "--guardian-dry-run", StringComparison.Ordinal);
+        args.Length >= 1 && string.Equals(args[0], "--guardian-dry-run", StringComparison.Ordinal);
 
     public static bool IsAnalyzeFlag(string[] args) =>
-        args.Length == 1 && string.Equals(args[0], "--guardian-analyze", StringComparison.Ordinal);
+        args.Length >= 1 && string.Equals(args[0], "--guardian-analyze", StringComparison.Ordinal);
 
-    public static void RunDryRun()
+    // Unica forma aceita: <flag> --task-state <VALOR>. Ausente, malformado ou fora
+    // da allowlist => UNKNOWN (fail-closed). Nunca repassa texto arbitrario.
+    internal static string ParseTaskStateArgument(string[] args)
+    {
+        if (args.Length == 3 && string.Equals(args[1], "--task-state", StringComparison.Ordinal))
+            return NormalizeTaskState(args[2]);
+        return "UNKNOWN";
+    }
+
+    public static void RunDryRun() => RunDryRun(Array.Empty<string>());
+
+    public static void RunDryRun(string[] args)
     {
         var now = DateTimeOffset.Now;
         var nex = ReadCurrentNexState();
-        var result = ExecuteDryRun(ProductionLogsPath, ProductionStagePath, Path.GetTempPath(), now, nex, "UNKNOWN");
+        var result = ExecuteDryRun(ProductionLogsPath, ProductionStagePath, Path.GetTempPath(), now, nex, ParseTaskStateArgument(args));
 
         Console.WriteLine("PRIME_NEX_GUARDIAN_LITE_V0=DRY_RUN");
         Console.WriteLine("GUARDIAN_FLAG_ISOLATED=YES");
@@ -157,7 +170,9 @@ internal static class GuardianLite
         Console.WriteLine("PRODUCTION_MUTATION=NO");
     }
 
-    public static void RunAnalyze()
+    public static void RunAnalyze() => RunAnalyze(Array.Empty<string>());
+
+    public static void RunAnalyze(string[] args)
     {
         var now = DateTimeOffset.Now;
         var nex = ReadCurrentNexState();
@@ -167,7 +182,7 @@ internal static class GuardianLite
             Path.GetTempPath(),
             now,
             nex,
-            "UNKNOWN",
+            ParseTaskStateArgument(args),
             apiKey: null,
             clientFactory: null);
 
@@ -681,7 +696,13 @@ internal static class GuardianLite
     private static string SafeIdentifier(string value) => Guid.TryParse(value, out var id) ? id.ToString() : "UNKNOWN";
     private static string SafeEnum(string? value, string fallback) =>
         !string.IsNullOrWhiteSpace(value) && Regex.IsMatch(value, "^[A-Za-z0-9_]+$") ? value : fallback;
-    private static string NormalizeTaskState(string value) => value.ToUpperInvariant() is "READY" or "RUNNING" ? value.ToUpperInvariant() : "UNKNOWN";
+    private static readonly HashSet<string> AllowedTaskStates = new(StringComparer.Ordinal) { "READY", "RUNNING", "DISABLED", "UNKNOWN" };
+
+    internal static string NormalizeTaskState(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToUpperInvariant();
+        return AllowedTaskStates.Contains(normalized) ? normalized : "UNKNOWN";
+    }
 
     private sealed record RawRecord(DateTimeOffset Timestamp, string RunId, string Stage, string? ErrorCode, string? Reason, string? Route, string? NexPosition);
 }

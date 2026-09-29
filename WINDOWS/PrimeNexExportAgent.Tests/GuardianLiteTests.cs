@@ -331,11 +331,79 @@ public sealed class GuardianLiteTests : IDisposable
         var guardian = source.IndexOf("GuardianLite.IsDryRunFlag", StringComparison.Ordinal);
         var hybrid = source.IndexOf("RunOnceScheduledHybridEntrypoint.IsScheduledHybridFlag", StringComparison.Ordinal);
         Assert.True(guardian >= 0 && guardian < hybrid);
-        Assert.Contains("GuardianLite.RunDryRun();\n    return;", source.Replace("\r\n", "\n"));
+        Assert.Contains("GuardianLite.RunDryRun(args);\n    return;", source.Replace("\r\n", "\n"));
+        Assert.Contains("GuardianLite.RunAnalyze(args);\n    return;", source.Replace("\r\n", "\n"));
         Assert.True(GuardianLite.IsDryRunFlag(new[] { "--guardian-dry-run" }));
         Assert.False(GuardianLite.IsDryRunFlag(new[] { "--run-once-scheduled-hybrid" }));
     }
 
+    [Theory]
+    [InlineData("READY", "READY")]
+    [InlineData("Ready", "READY")]
+    [InlineData("RUNNING", "RUNNING")]
+    [InlineData("Disabled", "DISABLED")]
+    [InlineData("UNKNOWN", "UNKNOWN")]
+    [InlineData("Queued", "UNKNOWN")]
+    [InlineData("READY;extra texto", "UNKNOWN")]
+    [InlineData("", "UNKNOWN")]
+    public void TaskStateArgumentUsaAllowlistFechada(string value, string expected)
+    {
+        Assert.Equal(expected, GuardianLite.ParseTaskStateArgument(new[] { "--guardian-analyze", "--task-state", value }));
+        Assert.Equal(expected, GuardianLite.ParseTaskStateArgument(new[] { "--guardian-dry-run", "--task-state", value }));
+    }
+
+    [Fact]
+    public void TaskStateAusenteOuMalformadoViraUnknown()
+    {
+        Assert.Equal("UNKNOWN", GuardianLite.ParseTaskStateArgument(new[] { "--guardian-analyze" }));
+        Assert.Equal("UNKNOWN", GuardianLite.ParseTaskStateArgument(new[] { "--guardian-analyze", "--task-state" }));
+        Assert.Equal("UNKNOWN", GuardianLite.ParseTaskStateArgument(new[] { "--guardian-analyze", "--outro", "READY" }));
+        Assert.Equal("UNKNOWN", GuardianLite.ParseTaskStateArgument(new[] { "--guardian-analyze", "--task-state", "READY", "extra" }));
+        Assert.Equal("UNKNOWN", GuardianLite.ParseTaskStateArgument(Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void FlagsCompativeisComESemTaskState()
+    {
+        Assert.True(GuardianLite.IsDryRunFlag(new[] { "--guardian-dry-run" }));
+        Assert.True(GuardianLite.IsAnalyzeFlag(new[] { "--guardian-analyze" }));
+        Assert.True(GuardianLite.IsDryRunFlag(new[] { "--guardian-dry-run", "--task-state", "READY" }));
+        Assert.True(GuardianLite.IsAnalyzeFlag(new[] { "--guardian-analyze", "--task-state", "READY" }));
+        Assert.False(GuardianLite.IsAnalyzeFlag(new[] { "--task-state", "READY" }));
+        Assert.False(GuardianLite.IsAnalyzeFlag(Array.Empty<string>()));
+    }
+
+    [Fact]
+    public void DryRunComTaskStateReadyGravaSnapshotReadySemHttp()
+    {
+        var taskState = GuardianLite.ParseTaskStateArgument(new[] { "--guardian-dry-run", "--task-state", "READY" });
+        var result = GuardianLite.ExecuteDryRun(Logs, Stage, Temp, Now, new GuardianNexState("OPEN", "BACKGROUND"), taskState);
+        Assert.Equal("READY", result.Snapshot.TaskState);
+        Assert.Contains("READY", File.ReadAllText(result.SnapshotPath));
+        Assert.False(result.Snapshot.AiCalled);
+    }
+
+    [Fact]
+    public void DryRunSemTaskStateMantemUnknown()
+    {
+        var taskState = GuardianLite.ParseTaskStateArgument(new[] { "--guardian-dry-run" });
+        var result = GuardianLite.ExecuteDryRun(Logs, Stage, Temp, Now, new GuardianNexState("OPEN", "BACKGROUND"), taskState);
+        Assert.Equal("UNKNOWN", result.Snapshot.TaskState);
+    }
+
+    [Fact]
+    public void AnalyzeComTaskStateReadyFazNoMaximoUmaChamadaESemAutoFix()
+    {
+        WriteAmbiguousLogs();
+        var handler = new CountingHandler(_ => JsonResponse("AMBIGUOUS", 50, "Sinais mistos.", safeToAutoFix: true));
+        var taskState = GuardianLite.ParseTaskStateArgument(new[] { "--guardian-analyze", "--task-state", "READY" });
+        var result = GuardianLite.ExecuteAnalyze(Logs, Stage, Temp, Now,
+            new GuardianNexState("OPEN", "BACKGROUND"), taskState, "fake-key",
+            () => new HttpClient(handler));
+        Assert.Equal("READY", result.Snapshot.TaskState);
+        Assert.True(handler.Calls <= 1);
+        Assert.False(result.Diagnostic?.SafeToAutoFix ?? false);
+    }
     private static GuardianCycle Cycle(string stage, string error, string reason, string route, string position) =>
         new(Now, Guid.NewGuid().ToString(), route, position, stage, error, reason, 1000);
 

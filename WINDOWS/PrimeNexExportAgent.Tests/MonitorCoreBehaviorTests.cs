@@ -505,6 +505,88 @@ public sealed class MonitorCoreBehaviorTests : IDisposable
             ExtractLine(output, "DETAIL="));
     }
 
+    // ---------------------------------------------------------------- NEX / Task (Guardian)
+    // Get-NexSnapshot com Win32_Process simulado; nunca consulta o NEX real.
+
+    private (string Position, string Unconfirmed) NexSnapshotWith(string processesPs)
+    {
+        var output = RunCore(
+            "function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) return " + processesPs + " }\n" +
+            "$s = Get-NexSnapshot\n" +
+            "Write-Output ('POSITION=' + $s.Position)\n" +
+            "Write-Output ('UNCONFIRMED=' + $s.PathUnconfirmed)\n");
+        return (ExtractLine(output, "POSITION="), ExtractLine(output, "UNCONFIRMED="));
+    }
+
+    [Fact]
+    public void Nex_ZeroProcessosEhClosed()
+    {
+        var s = NexSnapshotWith("@()");
+        Assert.Equal("CLOSED", s.Position);
+        Assert.Equal("False", s.Unconfirmed);
+    }
+
+    [Fact]
+    public void Nex_CaminhoCorretoLegivelSegueLogicaNormal()
+    {
+        // PID ficticio sem janela: a logica normal (TApplication/TfrmPri) roda e,
+        // sem candidato unico, devolve UNKNOWN - nunca CLOSED.
+        var s = NexSnapshotWith("@([pscustomobject]@{ ProcessId = 999991; ExecutablePath = 'C:\\Nex\\NexAdmin.exe' })");
+        Assert.NotEqual("CLOSED", s.Position);
+        Assert.Equal("False", s.Unconfirmed);
+    }
+
+    [Fact]
+    public void Nex_CaminhoIlegivelEhUnknownNuncaClosed()
+    {
+        var s = NexSnapshotWith("@([pscustomobject]@{ ProcessId = 999992; ExecutablePath = $null })");
+        Assert.Equal("UNKNOWN", s.Position);
+        Assert.Equal("True", s.Unconfirmed);
+    }
+
+    [Fact]
+    public void Nex_MultiplosComIlegivelENenhumConfirmadoEhUnknown()
+    {
+        var s = NexSnapshotWith("@([pscustomobject]@{ ProcessId = 999993; ExecutablePath = $null }, [pscustomobject]@{ ProcessId = 999994; ExecutablePath = '' }, [pscustomobject]@{ ProcessId = 999995; ExecutablePath = 'D:\\Outro\\NexAdmin.exe' })");
+        Assert.Equal("UNKNOWN", s.Position);
+        Assert.Equal("True", s.Unconfirmed);
+    }
+
+    [Fact]
+    public void Nex_CaminhoLegivelDeOutroExecutavelContinuaClosed()
+    {
+        var s = NexSnapshotWith("@([pscustomobject]@{ ProcessId = 999996; ExecutablePath = 'D:\\Outro\\NexAdmin.exe' })");
+        Assert.Equal("CLOSED", s.Position);
+    }
+
+    [Theory]
+    [InlineData("Ready", "READY")]
+    [InlineData("Running", "RUNNING")]
+    [InlineData("Disabled", "DISABLED")]
+    [InlineData("Queued", "UNKNOWN")]
+    [InlineData("Indisponivel", "UNKNOWN")]
+    [InlineData("Ready --outro x", "UNKNOWN")]
+    public void Task_EstadoDoMonitorViraArgumentoAllowlist(string state, string expected)
+    {
+        var output = RunCore("Write-Output ('ARG=' + (ConvertTo-GuardianTaskStateArgument -State '" + state + "'))\n");
+        Assert.Equal(expected, ExtractLine(output, "ARG="));
+    }
+
+    [Fact]
+    public void Task_EstadoNuloViraUnknown()
+    {
+        var output = RunCore("Write-Output ('ARG=' + (ConvertTo-GuardianTaskStateArgument -State $null))\n");
+        Assert.Equal("UNKNOWN", ExtractLine(output, "ARG="));
+    }
+
+    [Fact]
+    public void Monitor_RepassaTaskStateSanitizadoAoGuardian()
+    {
+        var dir = Path.GetDirectoryName(CorePath())!;
+        var source = File.ReadAllText(Path.Combine(dir, "PrimeNexMonitor.ps1"));
+        Assert.Contains("'--guardian-analyze --task-state ' + (ConvertTo-GuardianTaskStateArgument -State $script:LastTaskSnapshotState)", source);
+        Assert.Contains("$script:LastTaskSnapshotState = [string]$taskSnapshot.State", source);
+    }
     private static string ExtractLine(string output, string prefix)
     {
         foreach (var line in output.Split('\n'))

@@ -156,8 +156,12 @@ public sealed class MonitorJsonCompatibilityTests
     {
         var monitorSource = ReadMonitorSource();
 
-        Assert.Contains("'🧠 Analisar com Guardian'", monitorSource);
-        Assert.Contains("-Title '🧠 GUARDIAN'", monitorSource);
+        Assert.Contains("[char]::ConvertFromUtf32(0x1F9E0) + ' Analisar com Guardian'", monitorSource);
+        Assert.Contains("Copiar diagn\\u00f3stico", monitorSource);
+        Assert.Contains("[System.Windows.Forms.Clipboard]::SetText((Get-GuardianClipboardText))", monitorSource);
+        Assert.Contains("-Title 'GUARDIAN IA'", monitorSource);
+        Assert.Contains("$rightColumn.AutoScroll = $true", monitorSource);
+        Assert.Contains("$rightColumn.Controls.SetChildIndex($guardianSection.Box, 5)", monitorSource);
         Assert.Contains("$guardianButton.Enabled = $false", monitorSource);
         Assert.Contains("$guardianButton.Enabled = $true", monitorSource);
         Assert.Contains("$guardianState.Text = 'Aguardando clique manual'", monitorSource);
@@ -165,12 +169,12 @@ public sealed class MonitorJsonCompatibilityTests
         Assert.Contains("$guardianState.Text = 'Concluido'", monitorSource);
         Assert.Contains("$guardianState.Text = 'Erro: '", monitorSource);
         Assert.Contains("$guardianTimer", monitorSource);
-        Assert.Contains("$psi.Arguments = '--guardian-analyze'", monitorSource);
+        Assert.Contains("$psi.Arguments = '--guardian-analyze --task-state ' + (ConvertTo-GuardianTaskStateArgument -State $script:LastTaskSnapshotState)", monitorSource);
         Assert.Contains("$process.StandardOutput.ReadToEndAsync()", monitorSource);
         Assert.Contains("$process.StandardError.ReadToEndAsync()", monitorSource);
         Assert.Contains("Get-GuardianResultPathsFromStdOut", monitorSource);
         Assert.Contains("Get-GuardianCanonicalJsonPath", monitorSource);
-        Assert.Contains("Nenhuma acao automatica e executada pelo Guardian.", monitorSource);
+        Assert.Contains("Nenhuma a\\u00e7\\u00e3o autom\\u00e1tica \\u00e9 executada.", monitorSource);
         Assert.DoesNotContain("DEEPSEEK_API_KEY", monitorSource);
         Assert.DoesNotContain("Invoke-Expression", monitorSource, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Get-ChildItem -LiteralPath $script:GuardianOutputDirectory", monitorSource);

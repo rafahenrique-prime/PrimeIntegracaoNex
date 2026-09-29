@@ -60,13 +60,13 @@ if (args.Length == 1 && args[0] == "--inspect-readonly")
 
 if (PrimeNexExportAgent.Diagnostics.GuardianLite.IsDryRunFlag(args))
 {
-    PrimeNexExportAgent.Diagnostics.GuardianLite.RunDryRun();
+    PrimeNexExportAgent.Diagnostics.GuardianLite.RunDryRun(args);
     return;
 }
 
 if (PrimeNexExportAgent.Diagnostics.GuardianLite.IsAnalyzeFlag(args))
 {
-    PrimeNexExportAgent.Diagnostics.GuardianLite.RunAnalyze();
+    PrimeNexExportAgent.Diagnostics.GuardianLite.RunAnalyze(args);
     return;
 }
 

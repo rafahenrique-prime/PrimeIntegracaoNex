@@ -193,7 +193,7 @@ $leftColumn.Margin = [System.Windows.Forms.Padding]::new(0, 0, 8, 0)
 
 $rightColumn = [System.Windows.Forms.Panel]::new()
 $rightColumn.Dock = 'Fill'
-$rightColumn.AutoScroll = $false
+$rightColumn.AutoScroll = $true
 $rightColumn.Margin = [System.Windows.Forms.Padding]::new(8, 0, 0, 0)
 
 $content.Controls.Add($leftColumn, 0, 0)
@@ -263,27 +263,124 @@ $errorCodeValue = Add-InformationRow -Table $errorSection.Table -Caption 'Codigo
 $errorValue = Add-InformationRow -Table $errorSection.Table -Caption 'Motivo' -Name 'ErrorSummary'
 $errorSection.Box.Visible = $false
 
-$guardianSection = New-Section -Title '🧠 GUARDIAN' -Height 292
+# O arquivo e lido como ANSI pelo Windows PowerShell 5.1; textos acentuados e emojis
+# sao montados por escape Unicode para evitar mojibake.
+function ConvertFrom-UnicodeEscape {
+    param([string]$Text)
+    return [regex]::Unescape($Text)
+}
+
+function Add-GuardianTextBoxRow {
+    param(
+        [System.Windows.Forms.TableLayoutPanel]$Table,
+        [string]$Caption,
+        [string]$Name,
+        [int]$Height
+    )
+
+    $row = $Table.RowCount
+    $Table.RowCount++
+
+    $captionLabel = New-ValueLabel
+    $captionLabel.Text = $Caption
+    $captionLabel.ForeColor = [System.Drawing.Color]::FromArgb(95, 105, 118)
+
+    $textBox = [System.Windows.Forms.TextBox]::new()
+    $textBox.Name = $Name
+    $textBox.Multiline = $true
+    $textBox.WordWrap = $true
+    $textBox.ReadOnly = $true
+    $textBox.ScrollBars = 'Vertical'
+    $textBox.BackColor = [System.Drawing.Color]::FromArgb(248, 249, 251)
+    $textBox.Font = [System.Drawing.Font]::new('Segoe UI', 9)
+    $textBox.Height = $Height
+    $textBox.Anchor = 'Left, Right'
+    $textBox.Margin = [System.Windows.Forms.Padding]::new(0, 2, 0, 2)
+    $textBox.Text = '-'
+
+    $Table.Controls.Add($captionLabel, 0, $row)
+    $Table.Controls.Add($textBox, 1, $row)
+    return $textBox
+}
+
+$guardianSection = New-Section -Title 'GUARDIAN IA' -Height 460
+$guardianClassification = Add-InformationRow -Table $guardianSection.Table -Caption (ConvertFrom-UnicodeEscape 'Classifica\u00e7\u00e3o') -Name 'GuardianClassification'
+$guardianConfidence = Add-InformationRow -Table $guardianSection.Table -Caption (ConvertFrom-UnicodeEscape 'Confian\u00e7a') -Name 'GuardianConfidence'
+$guardianClassification.Font = [System.Drawing.Font]::new('Segoe UI Semibold', 10)
+$guardianConfidence.Font = [System.Drawing.Font]::new('Segoe UI Semibold', 10)
 $guardianState = Add-InformationRow -Table $guardianSection.Table -Caption 'Estado' -Name 'GuardianState'
 $guardianSource = Add-InformationRow -Table $guardianSection.Table -Caption 'Origem' -Name 'GuardianSource'
-$guardianClassification = Add-InformationRow -Table $guardianSection.Table -Caption 'Classificacao' -Name 'GuardianClassification'
-$guardianConfidence = Add-InformationRow -Table $guardianSection.Table -Caption 'Confianca' -Name 'GuardianConfidence'
-$guardianSummary = Add-InformationRow -Table $guardianSection.Table -Caption 'Resumo' -Name 'GuardianSummary'
-$guardianEvidence = Add-InformationRow -Table $guardianSection.Table -Caption 'Evidencias' -Name 'GuardianEvidence'
-$guardianAction = Add-InformationRow -Table $guardianSection.Table -Caption 'Recomendacao' -Name 'GuardianAction'
+$guardianSummary = Add-GuardianTextBoxRow -Table $guardianSection.Table -Caption 'Resumo' -Name 'GuardianSummary' -Height 48
+$guardianEvidence = Add-GuardianTextBoxRow -Table $guardianSection.Table -Caption (ConvertFrom-UnicodeEscape 'Evid\u00eancias') -Name 'GuardianEvidence' -Height 72
+$guardianAction = Add-GuardianTextBoxRow -Table $guardianSection.Table -Caption (ConvertFrom-UnicodeEscape 'Recomenda\u00e7\u00e3o') -Name 'GuardianAction' -Height 48
 $guardianNeedsHuman = Add-InformationRow -Table $guardianSection.Table -Caption 'Humano' -Name 'GuardianNeedsHuman'
 $guardianAutoFix = Add-InformationRow -Table $guardianSection.Table -Caption 'Auto-fix' -Name 'GuardianAutoFix'
-$guardianLastAnalysis = Add-InformationRow -Table $guardianSection.Table -Caption 'Ultima analise' -Name 'GuardianLastAnalysis'
+$guardianLastAnalysis = Add-InformationRow -Table $guardianSection.Table -Caption (ConvertFrom-UnicodeEscape '\u00daltima an\u00e1lise') -Name 'GuardianLastAnalysis'
 $guardianNotice = Add-InformationRow -Table $guardianSection.Table -Caption 'Aviso' -Name 'GuardianNotice'
 $guardianState.Text = 'Aguardando clique manual'
-$guardianNotice.Text = 'Nenhuma acao automatica e executada pelo Guardian.'
+$guardianNotice.Text = ConvertFrom-UnicodeEscape 'Nenhuma a\u00e7\u00e3o autom\u00e1tica \u00e9 executada.'
 $guardianButtonRow = $guardianSection.Table.RowCount
 $guardianSection.Table.RowCount++
+$guardianButtonPanel = [System.Windows.Forms.FlowLayoutPanel]::new()
+$guardianButtonPanel.AutoSize = $true
+$guardianButtonPanel.WrapContents = $false
+$guardianButtonPanel.Anchor = 'Left'
 $guardianButton = [System.Windows.Forms.Button]::new()
-$guardianButton.Text = '🧠 Analisar com Guardian'
+$guardianButton.Text = [char]::ConvertFromUtf32(0x1F9E0) + ' Analisar com Guardian'
 $guardianButton.AutoSize = $true
-$guardianButton.Anchor = 'Left'
-$guardianSection.Table.Controls.Add($guardianButton, 1, $guardianButtonRow)
+$guardianCopyButton = [System.Windows.Forms.Button]::new()
+$guardianCopyButton.Text = [char]::ConvertFromUtf32(0x1F4CB) + (ConvertFrom-UnicodeEscape ' Copiar diagn\u00f3stico')
+$guardianCopyButton.AutoSize = $true
+$guardianButtonPanel.Controls.Add($guardianButton)
+$guardianButtonPanel.Controls.Add($guardianCopyButton)
+$guardianSection.Table.Controls.Add($guardianButtonPanel, 1, $guardianButtonRow)
+
+function Get-GuardianClipboardText {
+    $yesNo = { param($v) if ($v -eq 'SIM') { 'Sim' } elseif ($v -eq 'NAO') { ConvertFrom-UnicodeEscape 'N\u00e3o' } else { $v } }
+    $evidenceLines = @($guardianEvidence.Lines | Where-Object { $_.Trim() -ne '' } | ForEach-Object {
+        $line = $_.Trim()
+        if ($line.StartsWith('- ')) { $line } else { '- ' + $line }
+    })
+    $text = @(
+        'PRIME NEX GUARDIAN'
+        ''
+        'Estado: ' + $guardianState.Text
+        'Origem: ' + $guardianSource.Text
+        (ConvertFrom-UnicodeEscape 'Classifica\u00e7\u00e3o: ') + $guardianClassification.Text
+        (ConvertFrom-UnicodeEscape 'Confian\u00e7a: ') + $guardianConfidence.Text
+        ''
+        'Resumo:'
+        $guardianSummary.Text
+        ''
+        (ConvertFrom-UnicodeEscape 'Evid\u00eancias:')
+        ($evidenceLines -join "`r`n")
+        ''
+        (ConvertFrom-UnicodeEscape 'Recomenda\u00e7\u00e3o:')
+        $guardianAction.Text
+        ''
+        (ConvertFrom-UnicodeEscape 'Humano necess\u00e1rio: ') + (& $yesNo $guardianNeedsHuman.Text)
+        'Auto-fix: ' + (& $yesNo $guardianAutoFix.Text)
+        ''
+        (ConvertFrom-UnicodeEscape '\u00daltima an\u00e1lise:')
+        $guardianLastAnalysis.Text
+    ) -join "`r`n"
+
+    # Defesa extra: nunca levar chaves, tokens ou caminhos internos para o clipboard.
+    $text = [regex]::Replace($text, '(?i)\bsk-[A-Za-z0-9_\-]{8,}', '[omitido]')
+    $text = [regex]::Replace($text, '(?i)\b(bearer|authorization|api[_-]?key|x-api-key)\b\s*[:=]?\s*\S+', '$1 [omitido]')
+    $text = [regex]::Replace($text, '(?i)(?<![A-Za-z])[A-Z]:\\[^\s"'']*', '[caminho omitido]')
+    $text = [regex]::Replace($text, '\\\\[^\s"'']+', '[caminho omitido]')
+    return $text
+}
+
+$guardianCopyButton.Add_Click({
+    try {
+        [System.Windows.Forms.Clipboard]::SetText((Get-GuardianClipboardText))
+    }
+    catch {
+        [void][System.Windows.Forms.MessageBox]::Show('Falha ao copiar: ' + $_.Exception.Message, 'Guardian')
+    }
+})
 
 $rightColumn.Controls.Add($pipelineSection.Box)
 $rightColumn.Controls.Add($exportSection.Box)
@@ -291,12 +388,12 @@ $rightColumn.Controls.Add($lastSuccessSection.Box)
 $rightColumn.Controls.Add($blockSection.Box)
 $rightColumn.Controls.Add($errorSection.Box)
 $rightColumn.Controls.Add($guardianSection.Box)
-$rightColumn.Controls.SetChildIndex($pipelineSection.Box, 5)
-$rightColumn.Controls.SetChildIndex($exportSection.Box, 4)
-$rightColumn.Controls.SetChildIndex($lastSuccessSection.Box, 3)
-$rightColumn.Controls.SetChildIndex($blockSection.Box, 2)
-$rightColumn.Controls.SetChildIndex($errorSection.Box, 1)
-$rightColumn.Controls.SetChildIndex($guardianSection.Box, 0)
+$rightColumn.Controls.SetChildIndex($pipelineSection.Box, 4)
+$rightColumn.Controls.SetChildIndex($exportSection.Box, 3)
+$rightColumn.Controls.SetChildIndex($lastSuccessSection.Box, 2)
+$rightColumn.Controls.SetChildIndex($blockSection.Box, 1)
+$rightColumn.Controls.SetChildIndex($errorSection.Box, 0)
+$rightColumn.Controls.SetChildIndex($guardianSection.Box, 5)
 
 $script:AgentRuntimeId = Get-AgentRuntimeId
 $updatedLabel = [System.Windows.Forms.Label]::new()
@@ -320,6 +417,7 @@ $script:OutboxCache = $null
 $script:OutboxCacheAt = [datetime]::MinValue
 $script:OutboxFailureStreak = 0
 $script:GuardianProcess = $null
+$script:LastTaskSnapshotState = $null
 $script:GuardianStdOutTask = $null
 $script:GuardianStdErrTask = $null
 
@@ -352,7 +450,7 @@ function Complete-GuardianManualAnalysis {
         $guardianClassification.Text = $guardian.Classification
         $guardianConfidence.Text = $guardian.Confidence.ToString() + '%'
         $guardianSummary.Text = $guardian.Summary
-        $guardianEvidence.Text = $guardian.Evidence
+        $guardianEvidence.Text = (@([string]$guardian.Evidence -split ' \| ' | Where-Object { $_.Trim() -ne '' } | ForEach-Object { '- ' + $_.Trim() }) -join "`r`n")
         $guardianAction.Text = $guardian.RecommendedAction
         $guardianNeedsHuman.Text = if ($guardian.NeedsHuman) { 'SIM' } else { 'NAO' }
         $guardianAutoFix.Text = if ($guardian.SafeToAutoFixFinal) { 'SIM' } else { 'NAO' }
@@ -394,7 +492,7 @@ $guardianButton.Add_Click({
         $agentPath = Resolve-GuardianAgentPath
         $psi = [System.Diagnostics.ProcessStartInfo]::new()
         $psi.FileName = $agentPath
-        $psi.Arguments = '--guardian-analyze'
+        $psi.Arguments = '--guardian-analyze --task-state ' + (ConvertTo-GuardianTaskStateArgument -State $script:LastTaskSnapshotState)
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
         $psi.RedirectStandardOutput = $true
@@ -419,6 +517,7 @@ $refreshAction = {
     $timer.Enabled = $false
     try {
         $taskSnapshot = Get-TaskSnapshot
+        $script:LastTaskSnapshotState = [string]$taskSnapshot.State
         $pipelineSnapshot = Get-PipelineSnapshot
         $exportSnapshot = Get-ExportSnapshot
         $stageSnapshot = Get-ExportStageSnapshot
@@ -455,7 +554,7 @@ $refreshAction = {
         $statusPanel.BackColor = $palette[1]
         $statusDetail.Text = $overall.Detail
 
-        $nexState.Text = if ($nexSnapshot.Position -eq 'CLOSED') { 'Fechado' } elseif ($nexSnapshot.Available) { 'Aberto' } else { 'Indisponivel' }
+        $nexState.Text = if ($nexSnapshot.Position -eq 'CLOSED') { 'Fechado' } elseif ($nexSnapshot.PathUnconfirmed) { 'Indeterminado' } elseif ($nexSnapshot.Available) { 'Aberto' } else { 'Indisponivel' }
         $nexPosition.Text = $nexSnapshot.Position
 
         $stageCount.Text = if ($stageSnapshot.Available) { $stageSnapshot.Count.ToString() + ' arquivo' + $(if ($stageSnapshot.Count -eq 1) { '' } else { 's' }) } else { 'Indisponivel' }

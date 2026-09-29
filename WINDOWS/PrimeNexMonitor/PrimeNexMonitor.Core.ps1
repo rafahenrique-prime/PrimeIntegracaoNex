@@ -213,6 +213,16 @@ function Format-FileAge {
     catch { return '-' }
 }
 
+# Converte o State da Task ja lido pelo Monitor no argumento --task-state do
+# Guardian. Allowlist fechada; qualquer outro valor vira UNKNOWN (fail-closed).
+function ConvertTo-GuardianTaskStateArgument {
+    param([AllowNull()][string]$State)
+
+    $normalized = if ($null -eq $State) { '' } else { $State.Trim().ToUpperInvariant() }
+    if ($normalized -in @('READY', 'RUNNING', 'DISABLED')) { return $normalized }
+    return 'UNKNOWN'
+}
+
 function Get-TaskSnapshot {
     try {
         $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
@@ -483,6 +493,7 @@ function Get-NexSnapshot {
         ProcessCount = 0
         ValidPids    = @()
         Position     = 'UNKNOWN'
+        PathUnconfirmed = $false
         MainWindow   = $null
         Application  = $null
         Error        = $null
@@ -498,8 +509,12 @@ function Get-NexSnapshot {
 
         $result.ValidPids = @($validProcesses | ForEach-Object { [int]$_.ProcessId })
         if ($validProcesses.Count -eq 0) {
+            # Fail-closed: NexAdmin.exe com ExecutablePath ilegivel (ex.: NEX elevado)
+            # nao prova ausencia do NEX. Igual ao Win32NexRuntimeStateProbe do Agent.
+            $unreadable = @($processes | Where-Object { [string]::IsNullOrEmpty([string]$_.ExecutablePath) })
             $result.Available = $true
-            $result.Position = 'CLOSED'
+            $result.Position = if ($unreadable.Count -gt 0) { 'UNKNOWN' } else { 'CLOSED' }
+            $result.PathUnconfirmed = ($unreadable.Count -gt 0)
             return [pscustomobject]$result
         }
 
