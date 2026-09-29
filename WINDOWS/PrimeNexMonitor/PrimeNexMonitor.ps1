@@ -8,6 +8,13 @@ Add-Type -AssemblyName System.Drawing
 
 # Funcoes de leitura e constantes vivem no Core para permitir dot-source em teste.
 . (Join-Path $PSScriptRoot 'PrimeNexMonitor.Core.ps1')
+# Telemetry V1 fase local: payloads somente em memoria, sem rede e sem disco.
+. (Join-Path $PSScriptRoot 'PrimeNexMonitor.Telemetry.ps1')
+$script:TelemetryState = New-TelemetryDedupeState
+$script:TelemetryLastStatus = $null
+$script:TelemetryLastCycle = $null
+$script:TelemetryLastGuardian = $null
+$script:TelemetryLastErrors = @()
 
 function New-ValueLabel {
     $label = [System.Windows.Forms.Label]::new()
@@ -455,6 +462,8 @@ function Complete-GuardianManualAnalysis {
         $guardianNeedsHuman.Text = if ($guardian.NeedsHuman) { 'SIM' } else { 'NAO' }
         $guardianAutoFix.Text = if ($guardian.SafeToAutoFixFinal) { 'SIM' } else { 'NAO' }
         $guardianLastAnalysis.Text = Format-DateTime -Value $guardian.GeneratedAt
+        try { $script:TelemetryLastGuardian = New-TelemetryGuardianPayload -Guardian $guardian -CapturedAt (Get-Date) }
+        catch { $script:TelemetryLastGuardian = $null }
     }
     catch {
         Reset-GuardianPresentation
@@ -543,6 +552,14 @@ $refreshAction = {
         Set-HealthRow -Row $healthSuccess -Health $successHealth
 
         $overall = Get-OverallStatus -Task $taskSnapshot -Pipeline $pipelineSnapshot -Export $exportSnapshot -Nex $nexSnapshot -OutboxHealth $outboxHealth -StageHealth $stageHealth -SuccessHealth $successHealth
+
+        # Best-effort e isolado: nunca afeta $overall nem a tela.
+        try {
+            $script:TelemetryLastStatus = New-TelemetryStatusPayload -Task $taskSnapshot -Pipeline $pipelineSnapshot -Nex $nexSnapshot -Stage $stageSnapshot -Overall $overall -G13Blocked $isG13Blocked -CapturedAt $agora
+            $script:TelemetryLastCycle = New-TelemetryCyclePayload -Pipeline $pipelineSnapshot -CapturedAt $agora
+            $script:TelemetryLastErrors = @(Test-TelemetryPayload -Payload $script:TelemetryLastStatus)
+        }
+        catch { $script:TelemetryLastErrors = @('telemetria: ' + $_.Exception.Message) }
 
         $palette = switch ($overall.Level) {
             'NORMAL'   { @([System.Drawing.Color]::FromArgb(25, 135, 84), [System.Drawing.Color]::FromArgb(225, 244, 234)) }

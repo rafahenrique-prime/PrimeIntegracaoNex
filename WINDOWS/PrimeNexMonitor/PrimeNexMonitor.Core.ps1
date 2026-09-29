@@ -695,6 +695,7 @@ function Get-GuardianMonitorResult {
             RecommendedAction = [string]$diagnostic.recommended_action
             NeedsHuman = [bool]$diagnostic.needs_human
             SafeToAutoFixFinal = [bool]$analysis.safe_to_auto_fix_final
+            AiCalled = ($null -ne ($analysis | Get-Member -Name 'ai_called' -MemberType NoteProperty) -and $analysis.ai_called -eq $true)
             GeneratedAt = [string]$analysis.generated_at
         }
     }
