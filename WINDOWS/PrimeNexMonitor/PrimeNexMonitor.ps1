@@ -8,9 +8,13 @@ Add-Type -AssemblyName System.Drawing
 
 # Funcoes de leitura e constantes vivem no Core para permitir dot-source em teste.
 . (Join-Path $PSScriptRoot 'PrimeNexMonitor.Core.ps1')
-# Telemetry V1 fase local: payloads somente em memoria, sem rede e sem disco.
+# Telemetry V1: payloads em memoria; envio best-effort somente se
+# %LOCALAPPDATA%\PrimeNex\telemetry.json tiver enabled=true (senao, zero rede).
 . (Join-Path $PSScriptRoot 'PrimeNexMonitor.Telemetry.ps1')
+. (Join-Path $PSScriptRoot 'PrimeNexMonitor.TelemetryTransport.ps1')
 $script:TelemetryState = New-TelemetryDedupeState
+$script:TelemetrySender = $null
+try { $script:TelemetrySender = New-TelemetrySender } catch { $script:TelemetrySender = $null }
 $script:TelemetryLastStatus = $null
 $script:TelemetryLastCycle = $null
 $script:TelemetryLastGuardian = $null
@@ -462,7 +466,12 @@ function Complete-GuardianManualAnalysis {
         $guardianNeedsHuman.Text = if ($guardian.NeedsHuman) { 'SIM' } else { 'NAO' }
         $guardianAutoFix.Text = if ($guardian.SafeToAutoFixFinal) { 'SIM' } else { 'NAO' }
         $guardianLastAnalysis.Text = Format-DateTime -Value $guardian.GeneratedAt
-        try { $script:TelemetryLastGuardian = New-TelemetryGuardianPayload -Guardian $guardian -CapturedAt (Get-Date) }
+        try {
+            $script:TelemetryLastGuardian = New-TelemetryGuardianPayload -Guardian $guardian -CapturedAt (Get-Date)
+            if (Test-TelemetryGuardianShouldSend -State $script:TelemetryState -Payload $script:TelemetryLastGuardian) {
+                if (Submit-TelemetryPayload -Sender $script:TelemetrySender -Payload $script:TelemetryLastGuardian) { Register-TelemetryGuardianSent -State $script:TelemetryState -Payload $script:TelemetryLastGuardian }
+            }
+        }
         catch { $script:TelemetryLastGuardian = $null }
     }
     catch {
@@ -557,7 +566,14 @@ $refreshAction = {
         try {
             $script:TelemetryLastStatus = New-TelemetryStatusPayload -Task $taskSnapshot -Pipeline $pipelineSnapshot -Nex $nexSnapshot -Stage $stageSnapshot -Overall $overall -G13Blocked $isG13Blocked -CapturedAt $agora
             $script:TelemetryLastCycle = New-TelemetryCyclePayload -Pipeline $pipelineSnapshot -CapturedAt $agora
-            $script:TelemetryLastErrors = @(Test-TelemetryPayload -Payload $script:TelemetryLastStatus)
+            $script:TelemetryLastErrors = Test-TelemetryPayload -Payload $script:TelemetryLastStatus
+            Step-TelemetrySender -Sender $script:TelemetrySender
+            if (Test-TelemetryCycleShouldSend -State $script:TelemetryState -Payload $script:TelemetryLastCycle) {
+                if (Submit-TelemetryPayload -Sender $script:TelemetrySender -Payload $script:TelemetryLastCycle) { Register-TelemetryCycleSent -State $script:TelemetryState -Payload $script:TelemetryLastCycle }
+            }
+            if (Test-TelemetryStatusShouldSend -State $script:TelemetryState -Payload $script:TelemetryLastStatus -Now $agora) {
+                if (Submit-TelemetryPayload -Sender $script:TelemetrySender -Payload $script:TelemetryLastStatus) { Register-TelemetryStatusSent -State $script:TelemetryState -Payload $script:TelemetryLastStatus -Now $agora }
+            }
         }
         catch { $script:TelemetryLastErrors = @('telemetria: ' + $_.Exception.Message) }
 
